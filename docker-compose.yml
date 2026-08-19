@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: pgvector/pgvector:pg16
@@ -26,7 +24,7 @@ services:
     ports:
       - "11434:11434"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/11434' || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -63,8 +61,6 @@ services:
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL}
     container_name: telematics_frontend
-    environment:
-      VITE_API_BASE_URL: ${VITE_API_BASE_URL}
     ports:
       - "3000:3000"
     depends_on:

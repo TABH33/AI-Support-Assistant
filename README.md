@@ -69,40 +69,26 @@ The `.env` file controls all service configurations:
 - `OLLAMA_EMBED_MODEL`: Embedding model name (e.g., nomic-embed-text)
 - `JWT_SECRET`: Secret key for JWT token signing (change in production)
 - `SESSION_TIMEOUT_MINUTES`: Session timeout duration
-- `VITE_API_BASE_URL`: Frontend API endpoint (used during build)
+- `VITE_API_BASE_URL`: Frontend API endpoint (baked at build time; changing this requires `docker compose build frontend` before restarting)
 
 ## Running Tests Locally
 
-### Backend Tests
+Tests are run locally (outside Docker) against the source trees. The production Docker images do not include test dependencies or development files.
 
-To run backend tests without Docker:
+### Backend Tests
 
 ```bash
 cd backend
-pip install -e .
+pip install -e ".[dev]"
 pytest
 ```
 
-To run backend tests in Docker:
-
-```bash
-docker compose exec backend pytest
-```
-
 ### Frontend Tests
-
-To run frontend tests without Docker:
 
 ```bash
 cd frontend
 npm install
 npm run test
-```
-
-To run frontend tests in Docker:
-
-```bash
-docker compose exec frontend npm run test
 ```
 
 ## Development Workflow
