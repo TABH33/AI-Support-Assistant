@@ -23,11 +23,17 @@ ChatSession accordingly -- see task report for this interpretation call.
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import DateTime, Enum, Float, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
-from app.models.enums import PreferredNotificationMethod, Priority, SessionStatus, TicketStatus
+from app.models.enums import (
+    ChatMessageRole,
+    PreferredNotificationMethod,
+    Priority,
+    SessionStatus,
+    TicketStatus,
+)
 
 if TYPE_CHECKING:
     from app.models.customer import Customer
@@ -68,9 +74,64 @@ class ChatSession(Base):
     support_ticket: Mapped["SupportTicket | None"] = relationship(
         "SupportTicket", back_populates="chat_session", uselist=False, cascade="all, delete-orphan"
     )
+    messages: Mapped[list["ChatMessage"]] = relationship(
+        "ChatMessage",
+        back_populates="chat_session",
+        cascade="all, delete-orphan",
+        # `passive_deletes=True` pairs with `ChatMessage.chat_session_id`'s
+        # `ondelete="CASCADE"` FK: when a ChatSession is deleted, the ORM
+        # trusts the DB's own ON DELETE CASCADE to remove its ChatMessage
+        # rows instead of first SELECTing every message to cascade-delete
+        # them in Python. This matters for `app.jobs.retention`
+        # (`purge_expired_sessions`), which asserts (and depends on, for
+        # its no-N+1 scaling claim) that deleting a candidate session issues
+        # no extra per-session SELECT -- see that module's test for the
+        # exact query-count assertion this preserves.
+        passive_deletes=True,
+    )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid only
         return f"ChatSession(chat_session_id={self.chat_session_id!r}, session_status={self.session_status!r})"
+
+
+class ChatMessage(Base):
+    """A single message (the customer's question, or the AI assistant's
+    response) within a ChatSession (Task 15).
+
+    Fields per the task brief: role (user/assistant), content,
+    chat_session_id (FK), created_at, and a nullable thumbs-style `feedback`
+    column -- named exactly `feedback` per a binding pre-flight ruling that a
+    later task (22) depends on that exact column name. `feedback` is a
+    nullable boolean: `None` means no feedback given yet, `True`/`False` are
+    a thumbs-up/thumbs-down rating of the assistant's answer. There is no
+    feedback concept for `role=user` rows; the column is simply left `None`
+    for those (not worth a CHECK constraint for this POC).
+    """
+
+    __tablename__ = "chat_messages"
+
+    chat_message_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    chat_session_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_sessions.chat_session_id", ondelete="CASCADE"), nullable=False
+    )
+    role: Mapped[ChatMessageRole] = mapped_column(
+        Enum(
+            ChatMessageRole,
+            name="chat_message_role",
+            values_callable=lambda enum_cls: [member.value for member in enum_cls],
+        ),
+        nullable=False,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    feedback: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+    chat_session: Mapped["ChatSession"] = relationship("ChatSession", back_populates="messages")
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid only
+        return f"ChatMessage(chat_message_id={self.chat_message_id!r}, role={self.role!r})"
 
 
 class SupportTicket(Base):

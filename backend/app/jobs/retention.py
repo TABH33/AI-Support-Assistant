@@ -59,9 +59,12 @@ def purge_expired_sessions(
     workload without loading every `ChatSession` row on every invocation.
 
     Scope -- deliberately narrow, matching the task brief's "for now, just
-    the session row and any directly-owned data" (Task 15 later adds a
-    `ChatMessage` table; no such table exists yet, so there is nothing else
-    to purge there). The `ChatSession` row itself is deleted once expired,
+    the session row and any directly-owned data". Task 15 later added a
+    `ChatMessage` table (`ChatSession.messages`, FK `ON DELETE CASCADE` +
+    `passive_deletes=True`); deleting a purged `ChatSession` removes its
+    messages via that DB-level cascade, not an ORM-loaded one, so it adds no
+    extra SELECT here -- the no-N+1 query-count assertion below still holds.
+    The `ChatSession` row itself is deleted once expired,
     **gated on its linked `SupportTicket`'s status, not merely on whether a
     ticket exists**:
 

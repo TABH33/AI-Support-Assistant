@@ -69,3 +69,11 @@ class DrivingEventType(str, Enum):
     HARSH_BRAKING = "harsh_braking"
     IDLING = "idling"
     ROUTE_DEVIATION = "route_deviation"
+
+
+class ChatMessageRole(str, Enum):
+    """Who authored a given `ChatMessage`: the customer's own question, or
+    the AI assistant's (or escalation fallback's) response."""
+
+    USER = "user"
+    ASSISTANT = "assistant"

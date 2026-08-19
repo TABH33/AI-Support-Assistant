@@ -6,7 +6,7 @@ resolve when mappers are configured.
 """
 
 from app.models.base import Base
-from app.models.chat import ChatSession, Notification, SupportTicket
+from app.models.chat import ChatMessage, ChatSession, Notification, SupportTicket
 from app.models.customer import Customer
 from app.models.device import Device
 from app.models.knowledge import KnowledgeBaseArticle
@@ -22,6 +22,7 @@ __all__ = [
     "Trip",
     "DrivingEvent",
     "ChatSession",
+    "ChatMessage",
     "SupportTicket",
     "Notification",
     "SupportAgent",
