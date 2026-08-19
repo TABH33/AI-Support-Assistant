@@ -1,13 +1,22 @@
 """Driver, Vehicle, Trip, and DrivingEvent models (ASS2 class diagram).
 
 ER relationships owned by these entities:
+  Customer 1 -> Many Driver (via Driver.customer_id)
+  Customer 1 -> Many Vehicle (via Vehicle.customer_id)
   Driver 1 -> Many Trip
   Trip -> Vehicle (many trips reference one vehicle)
   Trip 1 -> Many DrivingEvent
 
-Note: the plan's Global Constraints / ER relationship list does not specify a
-Customer -> Driver or Customer -> Vehicle relationship, so none is added here
--- only the relationships explicitly listed in the task brief are modeled.
+Note on Driver/Vehicle -> Customer: the plan's original Global Constraints /
+ER relationship list for Task 4 did not separately enumerate a Customer ->
+Driver or Customer -> Vehicle relationship, so the first pass of this model
+deliberately left it out. That reading was revised once Task 7 hit a real
+per-customer-fleet-isolation requirement tracing back to an explicit source
+requirement ("Only authorized persons ... can access the system and query
+THEIR OWN FLEET for insight"), so `customer_id` FKs were added to both models
+in a follow-up migration (f047842cb6ff -> 054e88c6af09). Trip and
+DrivingEvent are unchanged -- they're scoped to a customer transitively via
+Driver/Vehicle.
 """
 
 from datetime import datetime, timezone
@@ -19,13 +28,19 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base
 from app.models.enums import DrivingEventType
 
+if TYPE_CHECKING:
+    from app.models.customer import Customer
+
 
 class Driver(Base):
-    """A driver who operates vehicles and generates trips."""
+    """A driver who operates vehicles and generates trips, belonging to one customer's fleet."""
 
     __tablename__ = "drivers"
 
     driver_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.customer_id"), nullable=False
+    )
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     license_number: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -34,6 +49,7 @@ class Driver(Base):
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
 
+    customer: Mapped["Customer"] = relationship("Customer", back_populates="drivers")
     trips: Mapped[list["Trip"]] = relationship(
         "Trip", back_populates="driver", cascade="all, delete-orphan"
     )
@@ -43,11 +59,14 @@ class Driver(Base):
 
 
 class Vehicle(Base):
-    """A fleet vehicle that trips are recorded against."""
+    """A fleet vehicle that trips are recorded against, belonging to one customer's fleet."""
 
     __tablename__ = "vehicles"
 
     vehicle_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.customer_id"), nullable=False
+    )
     registration_number: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
     make: Mapped[str] = mapped_column(String(64), nullable=False)
     model: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -56,6 +75,7 @@ class Vehicle(Base):
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
 
+    customer: Mapped["Customer"] = relationship("Customer", back_populates="vehicles")
     trips: Mapped[list["Trip"]] = relationship(
         "Trip", back_populates="vehicle", cascade="all, delete-orphan"
     )

@@ -4,6 +4,8 @@ ER relationships owned by this entity (ASS3 Sec 3):
   Customer 1 -> Many Device
   Customer 1 -> Many ChatSession
   Customer 1 -> Many SupportTicket
+  Customer 1 -> Many Driver (fleet isolation -- see telematics.py's module docstring)
+  Customer 1 -> Many Vehicle (fleet isolation -- see telematics.py's module docstring)
 """
 
 from datetime import datetime, timezone
@@ -18,6 +20,7 @@ from app.models.enums import PreferredNotificationMethod
 if TYPE_CHECKING:
     from app.models.chat import ChatSession, SupportTicket
     from app.models.device import Device
+    from app.models.telematics import Driver, Vehicle
 
 
 class Customer(Base):
@@ -59,6 +62,12 @@ class Customer(Base):
     )
     support_tickets: Mapped[list["SupportTicket"]] = relationship(
         "SupportTicket", back_populates="customer", cascade="all, delete-orphan"
+    )
+    drivers: Mapped[list["Driver"]] = relationship(
+        "Driver", back_populates="customer", cascade="all, delete-orphan"
+    )
+    vehicles: Mapped[list["Vehicle"]] = relationship(
+        "Vehicle", back_populates="customer", cascade="all, delete-orphan"
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid only

@@ -113,8 +113,10 @@ def test_all_eleven_entities_are_defined_and_instantiable():
         last_seen=_now(),
         device_status=DeviceStatus.ACTIVE,
     )
-    driver = Driver(full_name="Test Driver", license_number="LIC-0001")
-    vehicle = Vehicle(registration_number="REG-0001", make="Toyota", model="Hilux", year=2022)
+    driver = Driver(customer_id=1, full_name="Test Driver", license_number="LIC-0001")
+    vehicle = Vehicle(
+        customer_id=1, registration_number="REG-0001", make="Toyota", model="Hilux", year=2022
+    )
     trip = Trip(driver_id=1, vehicle_id=1, start_time=_now())
     driving_event = DrivingEvent(
         trip_id=1, event_type=DrivingEventType.SPEEDING, event_time=_now()
@@ -266,8 +268,26 @@ def test_device_battery_status_defaults_when_unspecified(session):
 
 
 def test_driver_trip_vehicle_and_driving_events(session):
-    driver = Driver(full_name="Sam Driver", license_number="LIC-100")
-    vehicle = Vehicle(registration_number="REG-100", make="Ford", model="Ranger", year=2021)
+    customer = Customer(
+        full_name="Fleet Owner",
+        email="fleetowner@example.test",
+        phone_number="+61000000004",
+        preferred_notification_method=PreferredNotificationMethod.EMAIL,
+        password_hash="hashed",
+    )
+    session.add(customer)
+    session.flush()
+
+    driver = Driver(
+        customer_id=customer.customer_id, full_name="Sam Driver", license_number="LIC-100"
+    )
+    vehicle = Vehicle(
+        customer_id=customer.customer_id,
+        registration_number="REG-100",
+        make="Ford",
+        model="Ranger",
+        year=2021,
+    )
     session.add_all([driver, vehicle])
     session.flush()
 
@@ -295,12 +315,84 @@ def test_driver_trip_vehicle_and_driving_events(session):
     assert len(driver.trips) == 1
     assert driver.trips[0].vehicle.registration_number == "REG-100"
     assert trip.vehicle.vehicle_id == vehicle.vehicle_id
+    assert driver.customer.customer_id == customer.customer_id
+    assert vehicle.customer.customer_id == customer.customer_id
     assert {e.event_type for e in trip.driving_events} == {
         DrivingEventType.HARSH_BRAKING,
         DrivingEventType.SPEEDING,
     }
     for e in trip.driving_events:
         assert e.trip.trip_id == trip.trip_id
+
+
+def test_customer_one_to_many_driver_and_vehicle_fleet_isolation(session):
+    """Customer 1 -> Many Driver and Customer 1 -> Many Vehicle (fleet isolation FKs
+    added after Task 7 hit a real per-customer-fleet-isolation requirement -- see
+    telematics.py's module docstring). Re-fetches fresh copies via session.get()
+    after session.expire_all() to confirm the FKs genuinely resolve via a real
+    query, not just in-session Python object identity."""
+    customer_a = Customer(
+        full_name="Fleet A Owner",
+        email="fleeta@example.test",
+        phone_number="+61000000005",
+        preferred_notification_method=PreferredNotificationMethod.EMAIL,
+        password_hash="hashed",
+    )
+    customer_b = Customer(
+        full_name="Fleet B Owner",
+        email="fleetb@example.test",
+        phone_number="+61000000006",
+        preferred_notification_method=PreferredNotificationMethod.EMAIL,
+        password_hash="hashed",
+    )
+    session.add_all([customer_a, customer_b])
+    session.flush()
+
+    driver_a = Driver(
+        customer_id=customer_a.customer_id, full_name="Driver A", license_number="LIC-A1"
+    )
+    vehicle_a = Vehicle(
+        customer_id=customer_a.customer_id,
+        registration_number="REG-A1",
+        make="Toyota",
+        model="Hilux",
+        year=2020,
+    )
+    driver_b = Driver(
+        customer_id=customer_b.customer_id, full_name="Driver B", license_number="LIC-B1"
+    )
+    session.add_all([driver_a, vehicle_a, driver_b])
+    session.commit()
+
+    # Re-fetch fresh copies from the DB to confirm every FK genuinely resolves
+    # via a query, not just in-session identity (same pattern as
+    # test_full_entity_graph_persists_and_all_fks_resolve).
+    session.expire_all()
+
+    fetched_customer_a = session.get(Customer, customer_a.customer_id)
+    assert {d.driver_id for d in fetched_customer_a.drivers} == {driver_a.driver_id}
+    assert {v.vehicle_id for v in fetched_customer_a.vehicles} == {vehicle_a.vehicle_id}
+
+    fetched_driver_a = session.get(Driver, driver_a.driver_id)
+    assert fetched_driver_a.customer.customer_id == customer_a.customer_id
+
+    fetched_vehicle_a = session.get(Vehicle, vehicle_a.vehicle_id)
+    assert fetched_vehicle_a.customer.customer_id == customer_a.customer_id
+
+    # Fleet isolation: customer_b's driver must not show up under customer_a.
+    assert driver_b.driver_id not in {d.driver_id for d in fetched_customer_a.drivers}
+    fetched_customer_b = session.get(Customer, customer_b.customer_id)
+    assert {d.driver_id for d in fetched_customer_b.drivers} == {driver_b.driver_id}
+
+
+def test_invalid_driver_customer_id_is_rejected(session):
+    """A Driver referencing a non-existent customer_id must fail (same FK-enforcement
+    rigor as test_invalid_foreign_key_is_rejected, applied to the new column)."""
+    orphan_driver = Driver(customer_id=999_999, full_name="Orphan Driver", license_number="LIC-ORPHAN")
+    session.add(orphan_driver)
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
 
 
 # ---------------------------------------------------------------------------
@@ -553,8 +645,6 @@ def test_full_entity_graph_persists_and_all_fks_resolve(session):
         preferred_notification_method=PreferredNotificationMethod.IN_APP,
         password_hash="hashed",
     )
-    driver = Driver(full_name="Full Graph Driver", license_number="LIC-999")
-    vehicle = Vehicle(registration_number="REG-999", make="Isuzu", model="D-Max", year=2023)
     agent = SupportAgent(
         full_name="Full Graph Agent",
         email="fullgraphagent@example.test",
@@ -562,7 +652,20 @@ def test_full_entity_graph_persists_and_all_fks_resolve(session):
         password_hash="hashed",
     )
     kb_article = KnowledgeBaseArticle(title="Device pairing guide", content="Pair your device by...")
-    session.add_all([customer, driver, vehicle, agent, kb_article])
+    session.add_all([customer, agent, kb_article])
+    session.flush()
+
+    driver = Driver(
+        customer_id=customer.customer_id, full_name="Full Graph Driver", license_number="LIC-999"
+    )
+    vehicle = Vehicle(
+        customer_id=customer.customer_id,
+        registration_number="REG-999",
+        make="Isuzu",
+        model="D-Max",
+        year=2023,
+    )
+    session.add_all([driver, vehicle])
     session.flush()
 
     device_last_seen = _now()
@@ -644,6 +747,12 @@ def test_full_entity_graph_persists_and_all_fks_resolve(session):
     assert fetched_trip.driver.driver_id == driver.driver_id
     assert fetched_trip.vehicle.vehicle_id == vehicle.vehicle_id
     assert fetched_trip.driving_events[0].driving_event_id == driving_event.driving_event_id
+
+    fetched_driver = session.get(Driver, driver.driver_id)
+    assert fetched_driver.customer.customer_id == customer.customer_id
+
+    fetched_vehicle = session.get(Vehicle, vehicle.vehicle_id)
+    assert fetched_vehicle.customer.customer_id == customer.customer_id
 
     fetched_kb_article = session.get(KnowledgeBaseArticle, kb_article.knowledge_base_article_id)
     assert fetched_kb_article.title == "Device pairing guide"
