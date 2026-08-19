@@ -27,3 +27,6 @@ Thumbs.db
 
 # SDD workspace (self-managed .gitignore lives under .superpowers/sdd/, this covers top-level too)
 .superpowers/
+
+# Git worktrees for isolated plan implementation
+.worktrees/
