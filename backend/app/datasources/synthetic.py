@@ -21,15 +21,22 @@ helpers already use -- `Driver`/`Vehicle` filter directly on their own
 their own) join to `Driver` and filter there, exactly mirroring Task 7's
 `_scoped_trips`. Passing `customer_id=None` skips that filter entirely,
 reproducing the unscoped query.
+
+The Task 16 fleet-wide `list_*` methods below apply that exact same
+`_scoped_*` query shape, just with `customer_id` required instead of
+optional (see `base.py`'s docstring for why).
 """
 
 from __future__ import annotations
+
+from datetime import datetime
 
 from fastapi import Depends
 from sqlalchemy.orm import Session
 
 from app.datasources.base import TelematicsDataSource
 from app.database import get_db
+from app.models.device import Device
 from app.models.knowledge import KnowledgeBaseArticle
 from app.models.telematics import Driver, DrivingEvent, Trip, Vehicle
 
@@ -90,6 +97,47 @@ class SyntheticDataSource(TelematicsDataSource):
         if category is not None:
             query = query.filter(KnowledgeBaseArticle.category == category)
         return query.order_by(KnowledgeBaseArticle.knowledge_base_article_id).all()
+
+    def list_drivers(self, customer_id: int) -> list[Driver]:
+        return (
+            self._db.query(Driver)
+            .filter(Driver.customer_id == customer_id)
+            .order_by(Driver.driver_id)
+            .all()
+        )
+
+    def list_vehicles(self, customer_id: int) -> list[Vehicle]:
+        return (
+            self._db.query(Vehicle)
+            .filter(Vehicle.customer_id == customer_id)
+            .order_by(Vehicle.vehicle_id)
+            .all()
+        )
+
+    def list_devices(self, customer_id: int) -> list[Device]:
+        return (
+            self._db.query(Device)
+            .filter(Device.customer_id == customer_id)
+            .order_by(Device.device_id)
+            .all()
+        )
+
+    def list_trips_for_customer(
+        self,
+        customer_id: int,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> list[Trip]:
+        query = (
+            self._db.query(Trip)
+            .join(Driver, Trip.driver_id == Driver.driver_id)
+            .filter(Driver.customer_id == customer_id)
+        )
+        if since is not None:
+            query = query.filter(Trip.start_time >= since)
+        if until is not None:
+            query = query.filter(Trip.start_time < until)
+        return query.order_by(Trip.trip_id).all()
 
 
 def get_data_source(db: Session = Depends(get_db)) -> TelematicsDataSource:

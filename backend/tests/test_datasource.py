@@ -15,8 +15,22 @@ from sqlalchemy.pool import StaticPool
 
 from app.datasources.base import TelematicsDataSource
 from app.datasources.synthetic import SyntheticDataSource
-from app.models import Base, Customer, Driver, DrivingEvent, KnowledgeBaseArticle, Trip, Vehicle
-from app.models.enums import DrivingEventType, PreferredNotificationMethod
+from app.models import (
+    Base,
+    Customer,
+    Device,
+    Driver,
+    DrivingEvent,
+    KnowledgeBaseArticle,
+    Trip,
+    Vehicle,
+)
+from app.models.enums import (
+    BatteryStatus,
+    DeviceStatus,
+    DrivingEventType,
+    PreferredNotificationMethod,
+)
 
 
 @pytest.fixture()
@@ -398,3 +412,157 @@ def test_get_knowledge_base_articles_filters_by_category(session, data_source):
 
 def test_get_knowledge_base_articles_returns_empty_list_when_none_exist(data_source):
     assert data_source.get_knowledge_base_articles() == []
+
+
+# ---------------------------------------------------------------------------
+# Task 16 fleet-wide listing methods: list_drivers / list_vehicles /
+# list_devices / list_trips_for_customer -- real SQL-level customer_id
+# scoping (required, not optional, per base.py's docstring), proven with
+# the same two-customer isolation pattern as the ID-keyed methods above.
+# ---------------------------------------------------------------------------
+
+
+def _add_device(session, customer, suffix: str) -> Device:
+    device = Device(
+        customer_id=customer.customer_id,
+        serial_number=f"DEV-{suffix}",
+        device_type="obd-ii",
+        battery_status=BatteryStatus.OK,
+        device_status=DeviceStatus.ACTIVE,
+    )
+    session.add(device)
+    session.commit()
+    return device
+
+
+def _add_second_driver_and_vehicle(session, customer, suffix: str) -> dict:
+    driver = Driver(
+        customer_id=customer.customer_id,
+        full_name=f"Driver {suffix}b",
+        license_number=f"LIC-{suffix}b",
+    )
+    vehicle = Vehicle(
+        customer_id=customer.customer_id,
+        registration_number=f"REG-{suffix}b",
+        make="TestMake2",
+        model="TestModel2",
+        year=2021,
+    )
+    session.add_all([driver, vehicle])
+    session.commit()
+    return {"driver": driver, "vehicle": vehicle}
+
+
+def test_list_drivers_returns_only_that_customers_drivers(session, data_source):
+    fleet_a = _make_fleet(session, "LDA")
+    fleet_b = _make_fleet(session, "LDB")
+    extra_a = _add_second_driver_and_vehicle(session, fleet_a["customer"], "LDA")
+
+    drivers = data_source.list_drivers(fleet_a["customer"].customer_id)
+
+    driver_ids = {d.driver_id for d in drivers}
+    assert driver_ids == {fleet_a["driver"].driver_id, extra_a["driver"].driver_id}
+    assert fleet_b["driver"].driver_id not in driver_ids
+
+
+def test_list_drivers_returns_empty_list_for_customer_with_no_drivers(session, data_source):
+    customer = _make_customer(session, "LDEMPTY")
+    session.commit()
+    assert data_source.list_drivers(customer.customer_id) == []
+
+
+def test_list_vehicles_returns_only_that_customers_vehicles(session, data_source):
+    fleet_a = _make_fleet(session, "LVA")
+    fleet_b = _make_fleet(session, "LVB")
+    extra_a = _add_second_driver_and_vehicle(session, fleet_a["customer"], "LVA")
+
+    vehicles = data_source.list_vehicles(fleet_a["customer"].customer_id)
+
+    vehicle_ids = {v.vehicle_id for v in vehicles}
+    assert vehicle_ids == {fleet_a["vehicle"].vehicle_id, extra_a["vehicle"].vehicle_id}
+    assert fleet_b["vehicle"].vehicle_id not in vehicle_ids
+
+
+def test_list_devices_returns_only_that_customers_devices(session, data_source):
+    fleet_a = _make_fleet(session, "LDVA")
+    fleet_b = _make_fleet(session, "LDVB")
+    device_a = _add_device(session, fleet_a["customer"], "LDVA")
+    device_b = _add_device(session, fleet_b["customer"], "LDVB")
+
+    devices = data_source.list_devices(fleet_a["customer"].customer_id)
+
+    assert [d.device_id for d in devices] == [device_a.device_id]
+    assert device_b.device_id not in [d.device_id for d in devices]
+
+
+def test_list_devices_returns_empty_list_for_customer_with_no_devices(session, data_source):
+    fleet = _make_fleet(session, "LDVEMPTY")
+    assert data_source.list_devices(fleet["customer"].customer_id) == []
+
+
+def test_list_trips_for_customer_returns_only_that_customers_trips(session, data_source):
+    fleet_a = _make_fleet(session, "LTA")
+    fleet_b = _make_fleet(session, "LTB")
+
+    trips = data_source.list_trips_for_customer(fleet_a["customer"].customer_id)
+
+    assert [t.trip_id for t in trips] == [fleet_a["trip"].trip_id]
+    assert fleet_b["trip"].trip_id not in [t.trip_id for t in trips]
+
+
+def test_list_trips_for_customer_returns_empty_list_for_customer_with_no_trips(session, data_source):
+    customer = _make_customer(session, "LTEMPTY")
+    session.commit()
+    assert data_source.list_trips_for_customer(customer.customer_id) == []
+
+
+def test_list_trips_for_customer_since_and_until_filter_by_start_time(session, data_source):
+    customer = _make_customer(session, "LTWIN")
+    driver = Driver(
+        customer_id=customer.customer_id, full_name="Window Driver", license_number="LIC-LTWIN"
+    )
+    vehicle = Vehicle(
+        customer_id=customer.customer_id,
+        registration_number="REG-LTWIN",
+        make="Make",
+        model="Model",
+        year=2020,
+    )
+    session.add_all([driver, vehicle])
+    session.flush()
+
+    day1 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    day2 = datetime(2026, 1, 2, tzinfo=timezone.utc)
+    day3 = datetime(2026, 1, 3, tzinfo=timezone.utc)
+    trip_day1 = Trip(driver_id=driver.driver_id, vehicle_id=vehicle.vehicle_id, start_time=day1)
+    trip_day2 = Trip(driver_id=driver.driver_id, vehicle_id=vehicle.vehicle_id, start_time=day2)
+    trip_day3 = Trip(driver_id=driver.driver_id, vehicle_id=vehicle.vehicle_id, start_time=day3)
+    session.add_all([trip_day1, trip_day2, trip_day3])
+    session.commit()
+
+    # since only: day2 and day3.
+    trips_since = data_source.list_trips_for_customer(customer.customer_id, since=day2)
+    assert {t.trip_id for t in trips_since} == {trip_day2.trip_id, trip_day3.trip_id}
+
+    # until only: day1 (until is exclusive).
+    trips_until = data_source.list_trips_for_customer(customer.customer_id, until=day2)
+    assert {t.trip_id for t in trips_until} == {trip_day1.trip_id}
+
+    # since + until: just day2.
+    trips_window = data_source.list_trips_for_customer(
+        customer.customer_id, since=day2, until=day3
+    )
+    assert {t.trip_id for t in trips_window} == {trip_day2.trip_id}
+
+
+def test_list_trips_for_customer_with_customer_id_isolates_other_customer(session, data_source):
+    """Same isolation proof as the ID-keyed methods' customer_id tests --
+    fleet A's customer_id cannot reach fleet B's trips, and vice versa."""
+    fleet_a = _make_fleet(session, "LTISOA")
+    fleet_b = _make_fleet(session, "LTISOB")
+
+    trips_a = data_source.list_trips_for_customer(fleet_a["customer"].customer_id)
+    trips_b = data_source.list_trips_for_customer(fleet_b["customer"].customer_id)
+
+    assert [t.trip_id for t in trips_a] == [fleet_a["trip"].trip_id]
+    assert [t.trip_id for t in trips_b] == [fleet_b["trip"].trip_id]

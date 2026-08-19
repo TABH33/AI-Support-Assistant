@@ -72,12 +72,34 @@ security model handles tenant isolation elsewhere (e.g. row-level security
 enforced by the warehouse itself). `get_knowledge_base_articles` has no
 `customer_id` parameter -- the knowledge base is global, shared across all
 customers, not tenant-scoped data.
+
+Fleet-wide listing methods (added for Task 16): `list_drivers`,
+`list_vehicles`, `list_devices`, and `list_trips_for_customer` answer "give
+me this customer's whole fleet", not "give me the one row with this id" --
+a shape the ID-keyed methods above don't cover. Task 16's daily reports
+(start-of-day / end-of-day summaries) need exactly this: every driver,
+vehicle, device, and trip belonging to one customer, not a single resolved
+entity. Unlike the ID-keyed methods, `customer_id` here is a required
+positional parameter, not an optional defense-in-depth extra -- there is no
+meaningful "list every driver across every customer" call site in this
+plan (that's not what any report or endpoint needs), so making it required
+removes the possibility of a call site accidentally omitting it and getting
+an unscoped, cross-tenant result. Each mirrors the exact query shape its
+`_scoped_*` counterpart in `app/api/telematics.py` (Task 7) already uses:
+`list_drivers`/`list_vehicles`/`list_devices` filter directly on their own
+`customer_id` column; `list_trips_for_customer` joins to `Driver` and
+filters there, exactly like `_scoped_trips`. `since`/`until` (both
+optional, both compared against `Trip.start_time`) let callers narrow to a
+time window (e.g. "today") entirely in SQL, the same real-filtering
+standard the ID-keyed methods already hold to.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Protocol, runtime_checkable
 
+from app.models.device import Device
 from app.models.knowledge import KnowledgeBaseArticle
 from app.models.telematics import Driver, DrivingEvent, Trip, Vehicle
 
@@ -133,4 +155,35 @@ class TelematicsDataSource(Protocol):
         """Return knowledge-base articles (the RAG corpus), optionally
         filtered to a single `category`. `category=None` (the default)
         returns the full corpus."""
+        ...
+
+    def list_drivers(self, customer_id: int) -> list[Driver]:
+        """Return every `Driver` belonging to `customer_id`, ordered by
+        `driver_id`. Empty list if the customer has no drivers."""
+        ...
+
+    def list_vehicles(self, customer_id: int) -> list[Vehicle]:
+        """Return every `Vehicle` belonging to `customer_id`, ordered by
+        `vehicle_id`. Empty list if the customer has no vehicles."""
+        ...
+
+    def list_devices(self, customer_id: int) -> list[Device]:
+        """Return every `Device` belonging to `customer_id`, ordered by
+        `device_id`. Empty list if the customer has no devices."""
+        ...
+
+    def list_trips_for_customer(
+        self,
+        customer_id: int,
+        since: datetime | None = None,
+        until: datetime | None = None,
+    ) -> list[Trip]:
+        """Return every `Trip` belonging to `customer_id` (scoped
+        transitively via the trip's driver, same join `get_trip`/
+        `get_trips_for_driver` use), ordered oldest-first (by `trip_id`).
+        `since`/`until`, when given, filter to trips whose `start_time` is
+        `>= since` / `< until` respectively (both real SQL `WHERE` clauses,
+        not post-fetch Python filtering) -- e.g. a caller can pass today's
+        UTC midnight as `since` and tomorrow's UTC midnight as `until` to
+        get just today's trips. Empty list if nothing matches."""
         ...
