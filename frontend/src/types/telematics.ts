@@ -102,3 +102,32 @@ export interface Notification {
   sent_at: string | null
   created_at: string
 }
+
+/**
+ * Matches the `DeviceStatus` enum in `backend/app/models/enums.py` exactly.
+ */
+export type DeviceStatus = 'active' | 'inactive' | 'maintenance' | 'offline'
+
+/**
+ * Matches the `BatteryStatus` enum in `backend/app/models/enums.py` exactly.
+ */
+export type BatteryStatus = 'ok' | 'low' | 'critical'
+
+/**
+ * Mirrors `DeviceOut` in `backend/app/api/telematics.py` (`GET /devices`,
+ * Task 7). Field names/nullability copied directly from that file, not
+ * guessed. Used by `ChatWidget` (Task 21) to resolve a `device_id` when
+ * starting a new `/chat` session -- see that component's docstring.
+ */
+export interface Device {
+  device_id: number
+  customer_id: number
+  serial_number: string
+  device_type: string
+  battery_status: BatteryStatus
+  signal_strength: number | null
+  last_seen: string | null
+  device_status: DeviceStatus
+  installed_at: string | null
+  created_at: string
+}

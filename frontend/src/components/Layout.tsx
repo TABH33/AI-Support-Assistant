@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../context/AuthProvider'
+import { ChatWidget } from './ChatWidget'
 
 const NAV_LINKS = [
   { to: '/overview', label: 'Overview' },
@@ -53,6 +54,7 @@ export function Layout() {
       <main className="p-6">
         <Outlet />
       </main>
+      <ChatWidget />
     </div>
   )
 }

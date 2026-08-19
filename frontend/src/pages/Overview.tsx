@@ -9,9 +9,14 @@
  *
  * Deliberate scope simplification (per the Task 18 brief): no map SDK.
  * A list/table view of trips is sufficient for this POC.
+ *
+ * Task 21 extension: clicking a trip row selects it in `SelectionContext`
+ * (also setting that trip's driver/vehicle), so `ChatWidget`'s floating
+ * panel can include the currently-selected trip as context on `/chat`.
  */
 import { useEffect, useState } from 'react'
 import { apiGet } from '../lib/apiClient'
+import { useSelection } from '../context/SelectionContext'
 import type { Driver, Trip, Vehicle } from '../types/telematics'
 
 interface OverviewData {
@@ -42,6 +47,7 @@ export default function Overview() {
   const [data, setData] = useState<OverviewData | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const { selectedTripId, selectTrip } = useSelection()
 
   useEffect(() => {
     let cancelled = false
@@ -172,7 +178,22 @@ export default function Overview() {
             </thead>
             <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
               {trips.map((trip) => (
-                <tr key={trip.trip_id}>
+                <tr
+                  key={trip.trip_id}
+                  onClick={() =>
+                    selectTrip({
+                      tripId: trip.trip_id,
+                      driverId: trip.driver_id,
+                      vehicleId: trip.vehicle_id,
+                    })
+                  }
+                  aria-selected={trip.trip_id === selectedTripId}
+                  className={`cursor-pointer ${
+                    trip.trip_id === selectedTripId
+                      ? 'bg-blue-50 dark:bg-blue-900/30'
+                      : 'hover:bg-gray-50 dark:hover:bg-gray-700'
+                  }`}
+                >
                   <td className="px-4 py-2 text-sm text-gray-900 dark:text-white">
                     {driverNameById.get(trip.driver_id) ?? `Driver #${trip.driver_id}`}
                   </td>

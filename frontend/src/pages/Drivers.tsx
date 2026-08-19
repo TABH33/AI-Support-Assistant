@@ -10,9 +10,15 @@
  * `event_type` client-side. `event_type` values come from
  * `backend/app/models/enums.py`'s `DrivingEventType` (speeding /
  * harsh_braking / idling / route_deviation) -- not guessed.
+ *
+ * Task 21 extension: the driver selection is mirrored into
+ * `SelectionContext` (in addition to this component's own local state,
+ * which drives the list-highlighting UI) so `ChatWidget`'s floating panel
+ * can include the currently-selected driver as context on `/chat`.
  */
 import { useEffect, useState } from 'react'
 import { apiGet } from '../lib/apiClient'
+import { useSelection } from '../context/SelectionContext'
 import type { Driver, DrivingEvent, DrivingEventType, Trip } from '../types/telematics'
 
 /** Display order for event-type badges; also doubles as the set of known types. */
@@ -67,6 +73,7 @@ async function loadDriverEventCounts(
 }
 
 export default function Drivers() {
+  const { selectDriver } = useSelection()
   const [drivers, setDrivers] = useState<Driver[] | null>(null)
   const [driversError, setDriversError] = useState<string | null>(null)
   const [isLoadingDrivers, setIsLoadingDrivers] = useState(true)
@@ -90,6 +97,7 @@ export default function Drivers() {
           setDrivers(data)
           if (data.length > 0) {
             setSelectedDriverId(data[0].driver_id)
+            selectDriver(data[0].driver_id)
           }
         }
       } catch (err) {
@@ -108,7 +116,7 @@ export default function Drivers() {
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [selectDriver])
 
   // Load the trips->events chain whenever the selected driver changes.
   useEffect(() => {
@@ -187,7 +195,10 @@ export default function Drivers() {
                   <button
                     type="button"
                     aria-pressed={driver.driver_id === selectedDriverId}
-                    onClick={() => setSelectedDriverId(driver.driver_id)}
+                    onClick={() => {
+                      setSelectedDriverId(driver.driver_id)
+                      selectDriver(driver.driver_id)
+                    }}
                     className={`w-full px-4 py-3 text-left text-sm ${
                       driver.driver_id === selectedDriverId
                         ? 'bg-blue-50 dark:bg-blue-900/30 font-medium text-blue-900 dark:text-blue-200'

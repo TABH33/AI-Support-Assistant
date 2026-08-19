@@ -1,7 +1,17 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
 import Overview from './Overview'
+import { SelectionProvider } from '../context/SelectionContext'
 import type { Driver, Trip, Vehicle } from '../types/telematics'
+
+/** Overview reads/writes `SelectionContext` (Task 21) -- provide it in every render. */
+function renderOverview() {
+  return render(
+    <SelectionProvider>
+      <Overview />
+    </SelectionProvider>
+  )
+}
 
 const drivers: Driver[] = [
   {
@@ -90,7 +100,7 @@ describe('Overview', () => {
   it('shows a loading state before the fleet data arrives', () => {
     ;(fetch as unknown as Mock).mockImplementation(() => new Promise(() => {}))
 
-    render(<Overview />)
+    renderOverview()
 
     expect(screen.getByText(/loading fleet data/i)).toBeInTheDocument()
   })
@@ -98,7 +108,7 @@ describe('Overview', () => {
   it('renders summary counts and the trip list from the real API response shape', async () => {
     mockFleetFetch()
 
-    render(<Overview />)
+    renderOverview()
 
     await waitFor(() => {
       expect(screen.queryByText(/loading fleet data/i)).not.toBeInTheDocument()
@@ -142,7 +152,7 @@ describe('Overview', () => {
       json: async () => ({ detail: 'Database unavailable' }),
     })
 
-    render(<Overview />)
+    renderOverview()
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toHaveTextContent('Database unavailable')

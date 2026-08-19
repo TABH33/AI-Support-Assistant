@@ -1,7 +1,17 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
 import Drivers from './Drivers'
+import { SelectionProvider } from '../context/SelectionContext'
 import type { Driver, DrivingEvent, Trip } from '../types/telematics'
+
+/** Drivers reads/writes `SelectionContext` (Task 21) -- provide it in every render. */
+function renderDrivers() {
+  return render(
+    <SelectionProvider>
+      <Drivers />
+    </SelectionProvider>
+  )
+}
 
 const drivers: Driver[] = [
   {
@@ -165,7 +175,7 @@ describe('Drivers', () => {
   it('shows a loading state before the driver list arrives', () => {
     ;(fetch as unknown as Mock).mockImplementation(() => new Promise(() => {}))
 
-    render(<Drivers />)
+    renderDrivers()
 
     expect(screen.getByText(/loading drivers/i)).toBeInTheDocument()
   })
@@ -173,7 +183,7 @@ describe('Drivers', () => {
   it('renders the driver list and defaults to the first driver selected', async () => {
     mockDriverFetch()
 
-    render(<Drivers />)
+    renderDrivers()
 
     await waitFor(() => {
       expect(screen.queryByText(/loading drivers/i)).not.toBeInTheDocument()
@@ -190,7 +200,7 @@ describe('Drivers', () => {
   it('renders event-type badges with the exact counts and colors from mocked event data', async () => {
     mockDriverFetch()
 
-    render(<Drivers />)
+    renderDrivers()
 
     // Driver 1 (Jane Cooper) is auto-selected: trip 500 has 3 speeding + 1
     // harsh_braking; trip 501 has 2 idling + 1 route_deviation + 1 speeding.
@@ -226,7 +236,7 @@ describe('Drivers', () => {
   it('shows zero-count badges for a driver with no trips', async () => {
     mockDriverFetch()
 
-    render(<Drivers />)
+    renderDrivers()
 
     await waitFor(() => {
       expect(screen.queryByText(/loading drivers/i)).not.toBeInTheDocument()
@@ -256,7 +266,7 @@ describe('Drivers', () => {
       json: async () => ({ detail: 'Database unavailable' }),
     })
 
-    render(<Drivers />)
+    renderDrivers()
 
     await waitFor(() => {
       expect(screen.getByRole('alert')).toHaveTextContent('Database unavailable')
