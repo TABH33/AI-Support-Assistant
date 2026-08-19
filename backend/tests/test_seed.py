@@ -51,6 +51,7 @@ from app.seed.generator import (
     NUM_SUPPORT_AGENTS,
     NUM_TRIPS,
     NUM_VEHICLES,
+    SYNTHETIC_NAME_MARKERS,
     SeedData,
     generate_seed_data,
 )
@@ -256,6 +257,24 @@ def test_identifiers_are_obviously_synthetic(data):
         assert driver.license_number.startswith("SEED-")
     for vehicle in data.vehicles:
         assert vehicle.registration_number.startswith("SEED-")
+
+
+def test_full_names_are_obviously_fictional(data):
+    """Full names must be unambiguous on inspection, not just the emails/
+    phones/IDs -- e.g. "Alex Testfield" rather than a plausible real name
+    like "Alex Whitfield". Every generated full name must contain one of
+    the deliberately-synthetic surname markers (see `SYNTHETIC_NAME_MARKERS`
+    in the generator: "Test", "Sample", "Mock", etc.)."""
+
+    def _has_synthetic_marker(full_name: str) -> bool:
+        return any(marker in full_name for marker in SYNTHETIC_NAME_MARKERS)
+
+    for customer in data.customers:
+        assert _has_synthetic_marker(customer.full_name), customer.full_name
+    for driver in data.drivers:
+        assert _has_synthetic_marker(driver.full_name), driver.full_name
+    for agent in data.support_agents:
+        assert _has_synthetic_marker(agent.full_name), agent.full_name
 
 
 # ---------------------------------------------------------------------------

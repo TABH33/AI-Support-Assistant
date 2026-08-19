@@ -25,6 +25,11 @@ compliance docs require synthetic-only data):
   * serial numbers / license numbers / registration numbers are all
     prefixed ``SEED-`` and sequentially numbered so they cannot be mistaken
     for real-world identifiers.
+  * surnames (`LAST_NAMES`) are built from an obviously-synthetic root word
+    (see `SYNTHETIC_NAME_MARKERS`, e.g. "Test", "Sample", "Mock") fused with
+    a surname-shaped suffix, so every generated `Customer`/`Driver`/
+    `SupportAgent` full name is unambiguously fictional on inspection (e.g.
+    "Alex Testfield") while still being readable/name-shaped for demos.
   * `password_hash` values are an explicit non-hash placeholder string
     (Task 6 owns real password hashing; these rows exist only to satisfy the
     NOT NULL constraint until Task 6's auth flow sets real hashes).
@@ -88,11 +93,28 @@ FIRST_NAMES = [
     "Cameron", "Skyler", "Reese", "Rowan", "Quinn", "Avery", "Peyton",
     "Emerson", "Hayden", "Kendall", "Marley", "Sage",
 ]
+
+# Surnames are deliberately built from an obviously-synthetic root (never a
+# real-world surname fragment) plus an ordinary surname-shaped suffix, e.g.
+# "Testfield", "Sampleworth", "Mockton". This keeps generated full names
+# ("Alex Testfield") readable/name-shaped enough for demo screenshots while
+# making it unambiguous on inspection -- the same bar the `.test` email
+# domain, "555" phone exchange, and `SEED-` identifier prefixes already
+# meet -- that no generated person is or resembles a real individual.
+# `SYNTHETIC_NAME_MARKERS` is exported so tests (and any future consumer)
+# can assert the marker is actually present, not just eyeball the list.
+SYNTHETIC_NAME_MARKERS = [
+    "Test", "Sample", "Demo", "Mock", "Stub", "Dummy", "Fixture",
+    "Placeholder", "Synthetic", "Fictional", "Scratch", "Sandbox", "Fake",
+    "Debug", "Null", "Void", "Seed", "Example", "Cache", "Faux",
+]
+_SURNAME_SUFFIXES = [
+    "field", "worth", "son", "ton", "wood", "ley", "ford", "well", "moor",
+    "forth", "castle", "bridge", "hollow", "stone", "gate", "burg", "shire",
+    "vale", "crest", "haven",
+]
 LAST_NAMES = [
-    "Whitfield", "Nakamura", "Okafor", "Delgado", "Petrova", "Lindqvist",
-    "Abara", "Kowalski", "Silva", "Haddad", "Morrow", "Fontaine",
-    "Ibarra", "Novak", "Solberg", "Adeyemi", "Marchetti", "Osei",
-    "Callahan", "Tanaka",
+    f"{root}{suffix}" for root, suffix in zip(SYNTHETIC_NAME_MARKERS, _SURNAME_SUFFIXES)
 ]
 
 DEVICE_TYPES = ["obd-ii", "gps-tracker", "fuel-sensor", "dashcam"]
