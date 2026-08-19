@@ -247,6 +247,119 @@ def test_get_driving_events_returns_empty_list_for_unknown_trip(data_source):
 
 
 # ---------------------------------------------------------------------------
+# customer_id tenant scoping -- added after Task 10 review: every ID-keyed
+# method optionally enforces the same transitive-join scoping
+# app/api/telematics.py's `_scoped_*` helpers use, so LLM-tool-calling call
+# sites (Tasks 12-15) have a real enforcement point, not just a docstring
+# warning. Each test below builds two separate customers' fleets and proves
+# fleet A's customer_id can't reach fleet B's data (and vice versa isn't
+# needed -- the join logic is symmetric).
+# ---------------------------------------------------------------------------
+
+
+def test_get_driver_with_customer_id_returns_none_for_other_customer(session, data_source):
+    fleet_a = _make_fleet(session, "SCD-A")
+    fleet_b = _make_fleet(session, "SCD-B")
+
+    assert (
+        data_source.get_driver(
+            fleet_b["driver"].driver_id, customer_id=fleet_a["customer"].customer_id
+        )
+        is None
+    )
+    # Sanity: the *right* customer_id still finds it.
+    fetched = data_source.get_driver(
+        fleet_b["driver"].driver_id, customer_id=fleet_b["customer"].customer_id
+    )
+    assert fetched is not None
+    assert fetched.driver_id == fleet_b["driver"].driver_id
+
+
+def test_get_vehicle_with_customer_id_returns_none_for_other_customer(session, data_source):
+    fleet_a = _make_fleet(session, "SCV-A")
+    fleet_b = _make_fleet(session, "SCV-B")
+
+    assert (
+        data_source.get_vehicle(
+            fleet_b["vehicle"].vehicle_id, customer_id=fleet_a["customer"].customer_id
+        )
+        is None
+    )
+    fetched = data_source.get_vehicle(
+        fleet_b["vehicle"].vehicle_id, customer_id=fleet_b["customer"].customer_id
+    )
+    assert fetched is not None
+    assert fetched.vehicle_id == fleet_b["vehicle"].vehicle_id
+
+
+def test_get_trip_with_customer_id_returns_none_for_other_customer(session, data_source):
+    fleet_a = _make_fleet(session, "SCT-A")
+    fleet_b = _make_fleet(session, "SCT-B")
+
+    assert (
+        data_source.get_trip(
+            fleet_b["trip"].trip_id, customer_id=fleet_a["customer"].customer_id
+        )
+        is None
+    )
+    fetched = data_source.get_trip(
+        fleet_b["trip"].trip_id, customer_id=fleet_b["customer"].customer_id
+    )
+    assert fetched is not None
+    assert fetched.trip_id == fleet_b["trip"].trip_id
+
+
+def test_get_trips_for_driver_with_customer_id_returns_empty_for_other_customer(
+    session, data_source
+):
+    fleet_a = _make_fleet(session, "SCTD-A")
+    fleet_b = _make_fleet(session, "SCTD-B")
+
+    assert (
+        data_source.get_trips_for_driver(
+            fleet_b["driver"].driver_id, customer_id=fleet_a["customer"].customer_id
+        )
+        == []
+    )
+    trips = data_source.get_trips_for_driver(
+        fleet_b["driver"].driver_id, customer_id=fleet_b["customer"].customer_id
+    )
+    assert [t.trip_id for t in trips] == [fleet_b["trip"].trip_id]
+
+
+def test_get_driving_events_with_customer_id_returns_empty_for_other_customer(
+    session, data_source
+):
+    fleet_a = _make_fleet(session, "SCE-A")
+    fleet_b = _make_fleet(session, "SCE-B")
+
+    assert (
+        data_source.get_driving_events(
+            fleet_b["trip"].trip_id, customer_id=fleet_a["customer"].customer_id
+        )
+        == []
+    )
+    events = data_source.get_driving_events(
+        fleet_b["trip"].trip_id, customer_id=fleet_b["customer"].customer_id
+    )
+    assert len(events) == 2
+
+
+def test_id_keyed_methods_default_to_unscoped_when_customer_id_omitted(session, data_source):
+    """Regression guard for the `customer_id=None` default: confirms omitting
+    it reproduces the pre-scoping (Task 10 original) behavior -- any caller
+    can look up any id, same as before this fix round."""
+    fleet_a = _make_fleet(session, "SCU-A")
+
+    # No customer_id at all -- equivalent to the original unscoped calls.
+    assert data_source.get_driver(fleet_a["driver"].driver_id) is not None
+    assert data_source.get_vehicle(fleet_a["vehicle"].vehicle_id) is not None
+    assert data_source.get_trip(fleet_a["trip"].trip_id) is not None
+    assert len(data_source.get_trips_for_driver(fleet_a["driver"].driver_id)) == 1
+    assert len(data_source.get_driving_events(fleet_a["trip"].trip_id)) == 2
+
+
+# ---------------------------------------------------------------------------
 # get_knowledge_base_articles
 # ---------------------------------------------------------------------------
 

@@ -41,19 +41,37 @@ itself (not the object's concrete class) is what keeps callers decoupled --
 Tasks 11-16 must depend on `TelematicsDataSource`'s method signatures, never
 reach past it to `app.models`/`Session` themselves.
 
-Scope note: these methods take explicit IDs and return whatever exists for
-that ID -- no customer/RBAC scoping is baked in here. That mirrors the
-read-only, ID-keyed shape of the brief's own examples
-(`get_driving_events(trip_id)`, `get_trip(trip_id)`,
-`get_knowledge_base_articles()`) and keeps the interface a plain data
-accessor. Callers that need customer isolation (e.g. Task 12's chat engine,
-scoped to the customer on the current `ChatSession`) are responsible for
-only ever looking up IDs that already belong to that customer -- the same
-division of responsibility `app/api/telematics.py` uses between its
-`_scoped_*` query helpers (authorization) and the plain `db.query(...)`
-calls beneath them (data access). Baking RBAC into this interface would
-also be a poor fit for a future Databricks-backed implementation, which
-won't have this app's `CurrentUser`/JWT concepts at all.
+Scope note (revised after Task 10 review): the ID-keyed methods
+(`get_driver`, `get_vehicle`, `get_trip`, `get_trips_for_driver`,
+`get_driving_events`) accept an optional `customer_id: int | None = None`.
+This is *not* RBAC/JWT re-entering the interface -- it's a plain `int`,
+the same primitive `app/repositories/chat.py` (Task 8) already threads
+through its own functions (e.g. `create_support_ticket(db,
+chat_session_id, customer_id, ...)`). The interface still doesn't know
+about `CurrentUser`, roles, or tokens; it only knows "optionally, filter to
+rows reachable from this customer_id."
+
+Why this was added: Task 7's RBAC enforcement is one small, fixed set of
+REST handlers -- an easy audit choke point where a reviewer can read five
+`_scoped_*` helpers and be done. Tasks 12-15 (LLM tool-calling resolving a
+`trip_id`/`driver_id` out of a natural-language question) will have many
+more call sites, and "the caller must remember to pre-validate the ID"
+doesn't hold up as a guarantee across all of them -- the failure mode is a
+cross-tenant leak dressed up as the AI confidently answering with someone
+else's fleet data. So `customer_id` is the recommended defense-in-depth
+mechanism: Tasks 12-15 should pass the calling customer's id on every
+lookup derived from user input, and `SyntheticDataSource` enforces it with
+the same transitive-join logic `app/api/telematics.py`'s `_scoped_*`
+helpers already use (Driver/Vehicle direct `customer_id`; Trip and
+DrivingEvent scoped transitively through Driver). Passing `None` (the
+default) keeps today's unscoped behavior -- needed for contexts with no
+single owning customer (e.g. a support_agent's cross-fleet view, matching
+Task 7's own `support_agent`-is-unrestricted rule) -- and keeps a
+hypothetical `DatabricksDataSource` free to ignore the parameter if its own
+security model handles tenant isolation elsewhere (e.g. row-level security
+enforced by the warehouse itself). `get_knowledge_base_articles` has no
+`customer_id` parameter -- the knowledge base is global, shared across all
+customers, not tenant-scoped data.
 """
 
 from __future__ import annotations
@@ -69,29 +87,44 @@ class TelematicsDataSource(Protocol):
     """Read-only access to telematics + knowledge-base data, independent of
     the underlying storage engine."""
 
-    def get_driver(self, driver_id: int) -> Driver | None:
-        """Return the `Driver` with `driver_id`, or `None` if it doesn't exist."""
+    def get_driver(self, driver_id: int, customer_id: int | None = None) -> Driver | None:
+        """Return the `Driver` with `driver_id`, or `None` if it doesn't
+        exist. If `customer_id` is given, also returns `None` when the
+        driver exists but doesn't belong to that customer (tenant-scoping,
+        recommended whenever `driver_id` came from user-supplied/LLM-resolved
+        input)."""
         ...
 
-    def get_vehicle(self, vehicle_id: int) -> Vehicle | None:
-        """Return the `Vehicle` with `vehicle_id`, or `None` if it doesn't exist."""
+    def get_vehicle(self, vehicle_id: int, customer_id: int | None = None) -> Vehicle | None:
+        """Return the `Vehicle` with `vehicle_id`, or `None` if it doesn't
+        exist. If `customer_id` is given, also returns `None` when the
+        vehicle exists but doesn't belong to that customer."""
         ...
 
-    def get_trip(self, trip_id: int) -> Trip | None:
-        """Return the `Trip` with `trip_id`, or `None` if it doesn't exist."""
+    def get_trip(self, trip_id: int, customer_id: int | None = None) -> Trip | None:
+        """Return the `Trip` with `trip_id`, or `None` if it doesn't exist.
+        If `customer_id` is given, also returns `None` when the trip exists
+        but its driver doesn't belong to that customer."""
         ...
 
-    def get_trips_for_driver(self, driver_id: int) -> list[Trip]:
+    def get_trips_for_driver(
+        self, driver_id: int, customer_id: int | None = None
+    ) -> list[Trip]:
         """Return all `Trip`s belonging to `driver_id`, ordered oldest-first
         (by `trip_id`). Empty list if the driver has no trips (or doesn't
         exist) -- not an error, matching the other list-returning methods
-        here."""
+        here. If `customer_id` is given, also returns an empty list when
+        `driver_id` doesn't belong to that customer."""
         ...
 
-    def get_driving_events(self, trip_id: int) -> list[DrivingEvent]:
+    def get_driving_events(
+        self, trip_id: int, customer_id: int | None = None
+    ) -> list[DrivingEvent]:
         """Return all `DrivingEvent`s recorded for `trip_id`, ordered
         chronologically (by `event_time`). Empty list if the trip has no
-        events (or doesn't exist)."""
+        events (or doesn't exist). If `customer_id` is given, also returns
+        an empty list when the trip's driver doesn't belong to that
+        customer."""
         ...
 
     def get_knowledge_base_articles(
