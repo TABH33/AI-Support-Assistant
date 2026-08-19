@@ -18,30 +18,21 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_
+from sqlalchemy.orm import Session, joinedload
 
 from app.config import settings
 from app.models.chat import ChatSession
+from app.models.enums import TicketStatus
 
 logger = logging.getLogger(__name__)
 
-
-def _as_utc(dt: datetime) -> datetime:
-    """Normalize a datetime to timezone-aware UTC.
-
-    `ChatSession.start_time`/`end_time` are always written as UTC-aware
-    values (see `app.repositories.chat._now()`), but on SQLite -- used by
-    this repo's test suite, since there is no native timezone-aware
-    datetime type there -- a value can come back from the DB with its
-    tzinfo stripped even though the column is declared
-    `DateTime(timezone=True)`. A naive value is therefore assumed to
-    already be UTC rather than compared directly against a tz-aware `now`
-    (which would raise `TypeError`) or silently misinterpreted as local
-    time.
-    """
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt
+# A ChatSession that escalated to a SupportTicket only stays exempt from
+# purging while the ticket's lifecycle is still active. Once the ticket
+# reaches one of these terminal states, it no longer blocks the session
+# from being purged under the normal timeout rule -- see the docstring
+# below for the full rationale (and its consequence for the ticket itself).
+_TERMINAL_TICKET_STATUSES = frozenset({TicketStatus.RESOLVED, TicketStatus.CLOSED})
 
 
 def purge_expired_sessions(
@@ -62,52 +53,74 @@ def purge_expired_sessions(
     `timeout_minutes`", so reaching that limit already qualifies for
     purge. This is a deliberate `<=` comparison (`reference_time <= cutoff`
     where `cutoff = now - timeout_minutes`), not an accidental `<` vs `<=`
-    choice, and is covered explicitly by a boundary test.
+    choice, and is covered explicitly by a boundary test. This comparison
+    happens at the SQL level (see the query below), not in Python, so this
+    job scales to a cron-scheduled, unattended, indefinitely-running
+    workload without loading every `ChatSession` row on every invocation.
 
     Scope -- deliberately narrow, matching the task brief's "for now, just
     the session row and any directly-owned data" (Task 15 later adds a
     `ChatMessage` table; no such table exists yet, so there is nothing else
-    to purge there). Only the `ChatSession` row itself is deleted.
-    `ChatSession.support_ticket` is NOT deleted as a side effect, even
-    though the ORM relationship is declared with
-    `cascade="all, delete-orphan"` and *could* cascade a delete if this job
-    used `db.delete(chat_session)` on a session carrying a ticket:
-    a `SupportTicket` (and its `Notification`s) is a separate
-    compliance/audit record -- ticket status, assigned agent, resolution
-    history -- with its own retention requirements, independent of and
-    typically longer-lived than an ephemeral AI chat log. Auto-deleting a
-    customer's ticket (open, or already resolved and potentially needed
-    for an audit trail) purely as a side effect of the *originating chat
-    session* timing out would destroy data this job has no business
-    deleting. So: any expired `ChatSession` that has an associated
-    `SupportTicket` is deliberately left untouched by this job (both the
-    session and the ticket survive). (This also matches the schema's own
-    constraint: `SupportTicket.chat_session_id` is a NOT-NULL FK, so the
-    `ChatSession` row could not be deleted without cascading into the
-    ticket anyway -- skipping it is the only option that doesn't touch the
-    ticket.)
+    to purge there). The `ChatSession` row itself is deleted once expired,
+    **gated on its linked `SupportTicket`'s status, not merely on whether a
+    ticket exists**:
+
+    * No `SupportTicket` at all -> purge as soon as expired, same as any
+      other session.
+    * `SupportTicket` in a non-terminal status (`OPEN` or `IN_PROGRESS`)
+      -> the session is NOT purged, even once expired. A ticket still
+      being actively worked needs its originating chat context to survive
+      alongside it.
+    * `SupportTicket` in a terminal status (`RESOLVED` or `CLOSED`) -> the
+      session becomes purgeable again under the normal timeout rule, same
+      as a session with no ticket at all. Because `ChatSession.support_ticket`
+      is declared with `cascade="all, delete-orphan"`, deleting the session
+      at that point also deletes the ticket (and, via the ticket's own
+      cascade, its `Notification`s). This is intentional, not an oversight:
+      gating the exception on ticket existence alone (the job's first
+      version) meant *any* session that was ever escalated became exempt
+      from timeout-based deletion forever -- the opposite compliance
+      failure (indefinite retention) from the one that exception was meant
+      to prevent. Narrowing the gate to "only while the ticket's lifecycle
+      is still open" fixes that, at the cost of no longer giving resolved/
+      closed tickets a separate, longer retention window of their own --
+      that's a real trade-off worth knowing about (see the task report),
+      but a new "N days after resolution" grace period is explicitly out
+      of scope for this job.
 
     Returns the number of `ChatSession` rows actually deleted.
     """
     reference_now = now if now is not None else datetime.now(timezone.utc)
     cutoff = reference_now - timedelta(minutes=timeout_minutes)
 
-    purged = 0
-    for chat_session in db.query(ChatSession).all():
-        reference_time = _as_utc(
-            chat_session.end_time if chat_session.end_time is not None else chat_session.start_time
+    # SQL-level filter (not a Python-side scan of every row) so this job
+    # stays cheap to run on a schedule as the table grows: only rows that
+    # are actually expiry candidates are loaded. `joinedload` eager-loads
+    # `support_ticket` in that same query, avoiding an N+1 SELECT per
+    # candidate when the ticket-status gate below is evaluated.
+    candidates = (
+        db.query(ChatSession)
+        .options(joinedload(ChatSession.support_ticket))
+        .filter(
+            or_(
+                ChatSession.end_time <= cutoff,
+                and_(ChatSession.end_time.is_(None), ChatSession.start_time <= cutoff),
+            )
         )
-        if reference_time > cutoff:
-            continue  # not yet expired
+        .all()
+    )
 
-        if chat_session.support_ticket is not None:
-            # Expired, but has directly-owned data (a SupportTicket) that is
-            # out of scope for this job to delete -- see docstring.
+    purged = 0
+    for chat_session in candidates:
+        ticket = chat_session.support_ticket
+        if ticket is not None and ticket.ticket_status not in _TERMINAL_TICKET_STATUSES:
+            # Expired, but the linked ticket is still actively being
+            # worked -- leave both the session and the ticket alone.
             logger.info(
-                "Skipping expired ChatSession %s: has an associated SupportTicket %s "
-                "that must be retained independently of chat session retention.",
+                "Skipping expired ChatSession %s: linked SupportTicket %s is still %s.",
                 chat_session.chat_session_id,
-                chat_session.support_ticket.support_ticket_id,
+                ticket.support_ticket_id,
+                ticket.ticket_status.value,
             )
             continue
 
