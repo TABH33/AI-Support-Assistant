@@ -262,6 +262,29 @@ def test_list_trips_filter_by_vehicle_id(client, fleet_a):
     assert len(response.json()) == 1
 
 
+def test_list_trips_filter_by_another_customers_driver_id_returns_empty(client, fleet_a, fleet_b):
+    """Regression test: a customer-role caller supplying another customer's
+    driver_id as a /trips filter must not leak that customer's trip -- the
+    join-based customer_id scope predicate ANDs with the client-supplied
+    driver_id filter, so no row can satisfy both, and the response is an
+    empty list (not 403/404 -- the filter combination is simply
+    unsatisfiable, same as any other "excluded from the list" case)."""
+    response = client.get(
+        "/trips", params={"driver_id": fleet_b["driver"].driver_id}, headers=fleet_a["headers"]
+    )
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_list_trips_filter_by_another_customers_vehicle_id_returns_empty(client, fleet_a, fleet_b):
+    """Same regression as above, for the vehicle_id filter."""
+    response = client.get(
+        "/trips", params={"vehicle_id": fleet_b["vehicle"].vehicle_id}, headers=fleet_a["headers"]
+    )
+    assert response.status_code == 200
+    assert response.json() == []
+
+
 def test_list_trip_events_happy_path(client, fleet_a):
     response = client.get(f"/trips/{fleet_a['trip'].trip_id}/events", headers=fleet_a["headers"])
     assert response.status_code == 200
