@@ -241,42 +241,69 @@ def _generate_devices(rng: random.Random, customers: list[Customer]) -> list[Dev
     return devices
 
 
-def _generate_drivers(rng: random.Random) -> list[Driver]:
+def _generate_drivers(rng: random.Random, customers: list[Customer]) -> list[Driver]:
+    # Fleet isolation (Task 4 follow-up): every Driver belongs to exactly one
+    # customer's fleet. Round-robin across customers -- with NUM_DRIVERS >=
+    # NUM_CUSTOMERS this guarantees every customer has at least one driver,
+    # which _generate_trips relies on when pairing a same-customer
+    # driver+vehicle for each trip.
     drivers = []
     for i in range(NUM_DRIVERS):
         has_email = rng.random() < 0.8
         has_phone = rng.random() < 0.8
-        drivers.append(
-            Driver(
-                full_name=_full_name(rng),
-                license_number=f"SEED-LIC-{i + 1:04d}",
-                email=f"driver-{i + 1:02d}@example.test" if has_email else None,
-                phone_number=(
-                    f"+1-555-{200 + i:03d}-{2000 + i:04d}" if has_phone else None
-                ),
-            )
+        driver = Driver(
+            full_name=_full_name(rng),
+            license_number=f"SEED-LIC-{i + 1:04d}",
+            email=f"driver-{i + 1:02d}@example.test" if has_email else None,
+            phone_number=(
+                f"+1-555-{200 + i:03d}-{2000 + i:04d}" if has_phone else None
+            ),
         )
+        driver.customer = customers[i % len(customers)]
+        drivers.append(driver)
     return drivers
 
 
-def _generate_vehicles(rng: random.Random) -> list[Vehicle]:
+def _generate_vehicles(rng: random.Random, customers: list[Customer]) -> list[Vehicle]:
+    # Fleet isolation (Task 4 follow-up): every Vehicle belongs to exactly
+    # one customer's fleet -- same round-robin guarantee as drivers above.
     vehicles = []
     for i in range(NUM_VEHICLES):
         make, model = VEHICLE_MAKE_MODELS[i % len(VEHICLE_MAKE_MODELS)]
-        vehicles.append(
-            Vehicle(
-                registration_number=f"SEED-REG-{i + 1:04d}",
-                make=make,
-                model=model,
-                year=rng.randint(2015, 2024),
-            )
+        vehicle = Vehicle(
+            registration_number=f"SEED-REG-{i + 1:04d}",
+            make=make,
+            model=model,
+            year=rng.randint(2015, 2024),
         )
+        vehicle.customer = customers[i % len(customers)]
+        vehicles.append(vehicle)
     return vehicles
 
 
 def _generate_trips(
-    rng: random.Random, drivers: list[Driver], vehicles: list[Vehicle]
+    rng: random.Random,
+    customers: list[Customer],
+    drivers: list[Driver],
+    vehicles: list[Vehicle],
 ) -> list[Trip]:
+    # A trip happens within one customer's fleet, so its driver and vehicle
+    # must share a customer_id -- pick the customer first, then pick both
+    # the driver and the vehicle only from that customer's own pool.
+    drivers_by_customer: dict[int, list[Driver]] = {}
+    for driver in drivers:
+        drivers_by_customer.setdefault(id(driver.customer), []).append(driver)
+    vehicles_by_customer: dict[int, list[Vehicle]] = {}
+    for vehicle in vehicles:
+        vehicles_by_customer.setdefault(id(vehicle.customer), []).append(vehicle)
+    # Every customer is guaranteed >=1 driver and >=1 vehicle by the
+    # round-robin assignment above (NUM_DRIVERS/NUM_VEHICLES >= NUM_CUSTOMERS).
+    eligible_customers = [
+        c
+        for c in customers
+        if id(c) in drivers_by_customer and id(c) in vehicles_by_customer
+    ]
+
     trips = []
     for _ in range(NUM_TRIPS):
         start_time = _now() - timedelta(
@@ -298,8 +325,9 @@ def _generate_trips(
             end_location=rng.choice(SITE_NAMES),
             distance_km=distance_km,
         )
-        trip.driver = rng.choice(drivers)
-        trip.vehicle = rng.choice(vehicles)
+        customer = rng.choice(eligible_customers)
+        trip.driver = rng.choice(drivers_by_customer[id(customer)])
+        trip.vehicle = rng.choice(vehicles_by_customer[id(customer)])
         trips.append(trip)
     return trips
 
@@ -614,9 +642,9 @@ def generate_seed_data(seed: int = DEFAULT_SEED) -> SeedData:
 
     customers = _generate_customers(rng)
     devices = _generate_devices(rng, customers)
-    drivers = _generate_drivers(rng)
-    vehicles = _generate_vehicles(rng)
-    trips = _generate_trips(rng, drivers, vehicles)
+    drivers = _generate_drivers(rng, customers)
+    vehicles = _generate_vehicles(rng, customers)
+    trips = _generate_trips(rng, customers, drivers, vehicles)
     driving_events = _generate_driving_events(rng, trips)
     knowledge_base_articles = _generate_knowledge_base_articles()
     support_agents = _generate_support_agents(rng)

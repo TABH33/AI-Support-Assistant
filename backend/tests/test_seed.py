@@ -111,6 +111,30 @@ def test_every_trip_references_a_generated_driver_and_vehicle(data):
         assert id(trip.vehicle) in vehicle_ids
 
 
+def test_every_driver_and_vehicle_belongs_to_a_generated_customer(data):
+    """Fleet isolation (Task 4 follow-up): Driver.customer_id and
+    Vehicle.customer_id are now required (NOT NULL) FKs."""
+    customer_ids = {id(c) for c in data.customers}
+    for driver in data.drivers:
+        assert driver.customer is not None
+        assert id(driver.customer) in customer_ids
+    for vehicle in data.vehicles:
+        assert vehicle.customer is not None
+        assert id(vehicle.customer) in customer_ids
+
+
+def test_every_trip_pairs_a_driver_and_vehicle_from_the_same_customer(data):
+    """A trip happens within one customer's fleet -- pairing a Customer A
+    driver with a Customer B vehicle would be nonsensical data and would
+    undermine the whole point of the fleet-isolation FKs. This is a real
+    referential-consistency check (comparing actual customer identity), not
+    just "the field is populated"."""
+    for trip in data.trips:
+        assert trip.driver.customer is not None
+        assert trip.vehicle.customer is not None
+        assert trip.driver.customer is trip.vehicle.customer
+
+
 def test_every_driving_event_references_a_generated_trip(data):
     trip_ids = {id(t) for t in data.trips}
     for event in data.driving_events:
@@ -387,3 +411,20 @@ def test_persisted_fks_resolve_via_fresh_queries(session):
     for device in seed_data.devices:
         fetched = session.get(Device, device.device_id)
         assert fetched.customer_id == device.customer.customer_id
+
+    for driver in seed_data.drivers:
+        fetched = session.get(Driver, driver.driver_id)
+        assert fetched.customer_id == driver.customer.customer_id
+
+    for vehicle in seed_data.vehicles:
+        fetched = session.get(Vehicle, vehicle.vehicle_id)
+        assert fetched.customer_id == vehicle.customer.customer_id
+
+    for trip in seed_data.trips:
+        fetched = session.get(Trip, trip.trip_id)
+        assert fetched.driver_id == trip.driver.driver_id
+        assert fetched.vehicle_id == trip.vehicle.vehicle_id
+        # fleet isolation: a trip's driver and vehicle must belong to the
+        # same customer -- re-verified here against DB-resolved FKs, not
+        # just the in-memory objects already checked above.
+        assert fetched.driver.customer_id == fetched.vehicle.customer_id
