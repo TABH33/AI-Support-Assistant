@@ -17,6 +17,10 @@ build/
 .env.*
 !.env.example
 
+# Local scratch DB files (e.g. from manual Alembic/SQLite testing)
+*.db
+*.db-journal
+
 # OS
 .DS_Store
 Thumbs.db
