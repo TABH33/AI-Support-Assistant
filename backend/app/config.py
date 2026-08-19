@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     ollama_embed_model: str
     jwt_secret: str
     session_timeout_minutes: int
+    escalation_confidence_threshold: float = 0.6
 
     model_config = SettingsConfigDict(env_file=".env")
 
