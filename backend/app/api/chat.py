@@ -34,18 +34,20 @@ driver_id/trip_id/vehicle_id they pass:
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy.orm import Query as SAQuery, Session
 
 from app.ai.chat_service import answer_query
 from app.ai.escalation import handle_answer
 from app.ai.retrieval import retrieve_context
 from app.auth.dependencies import CurrentUser, require_role
 from app.database import get_db
-from app.models.chat import ChatMessage, ChatSession
+from app.models.chat import ChatMessage, ChatSession, Notification, SupportTicket
 from app.models.device import Device
-from app.models.enums import ChatMessageRole
+from app.models.enums import ChatMessageRole, PreferredNotificationMethod, Priority, TicketStatus
 from app.repositories.chat import create_chat_session
 
 router = APIRouter(tags=["chat"])
@@ -215,3 +217,100 @@ def post_chat(
         confidence=chat_answer.confidence,
         escalated=escalation_result.escalated,
     )
+
+
+# ---------------------------------------------------------------------------
+# `GET /tickets`, `GET /notifications` -- Task 20's read endpoints for the
+# Alerts screen.
+#
+# RBAC/scoping mirrors `app/api/telematics.py`'s `_scoped_*` pattern exactly
+# (see that module's docstring): `require_role("customer", "support_agent")`,
+# a `customer`-role caller is always filtered to `SupportTicket.customer_id
+# == current_user.user_id` / `Notification.customer_id ==
+# current_user.user_id` (the JWT-derived id -- never a client-supplied
+# `customer_id`), and a `support_agent`-role caller sees every customer's
+# tickets/notifications, optionally narrowed by an explicit `?customer_id=`
+# query filter (mirrors Task 7's `/devices?customer_id=`).
+# ---------------------------------------------------------------------------
+
+
+class SupportTicketOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    support_ticket_id: int
+    chat_session_id: int
+    customer_id: int
+    device_id: int
+    assigned_support_agent_id: int | None
+    ticket_status: TicketStatus
+    priority: Priority
+    subject: str | None
+    description: str | None
+    created_at: datetime
+    resolved_at: datetime | None
+
+
+class NotificationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    notification_id: int
+    support_ticket_id: int
+    customer_id: int
+    notification_type: PreferredNotificationMethod
+    message: str
+    sent_at: datetime | None
+    created_at: datetime
+
+
+def _scoped_tickets(db: Session, current_user: CurrentUser) -> SAQuery:
+    query = db.query(SupportTicket)
+    if current_user.role == "customer":
+        query = query.filter(SupportTicket.customer_id == current_user.user_id)
+    return query
+
+
+def _scoped_notifications(db: Session, current_user: CurrentUser) -> SAQuery:
+    query = db.query(Notification)
+    if current_user.role == "customer":
+        query = query.filter(Notification.customer_id == current_user.user_id)
+    return query
+
+
+@router.get("/tickets", response_model=list[SupportTicketOut])
+def list_tickets(
+    customer_id: int | None = Query(
+        default=None,
+        description=(
+            "Filter by customer. Ignored for `customer`-role callers (who "
+            "are always scoped to their own customer_id); optional for "
+            "`support_agent` callers, who see all customers' tickets when "
+            "omitted."
+        ),
+    ),
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(_allowed_roles),
+) -> list[SupportTicket]:
+    query = _scoped_tickets(db, current_user)
+    if current_user.role == "support_agent" and customer_id is not None:
+        query = query.filter(SupportTicket.customer_id == customer_id)
+    return query.order_by(SupportTicket.support_ticket_id).all()
+
+
+@router.get("/notifications", response_model=list[NotificationOut])
+def list_notifications(
+    customer_id: int | None = Query(
+        default=None,
+        description=(
+            "Filter by customer. Ignored for `customer`-role callers (who "
+            "are always scoped to their own customer_id); optional for "
+            "`support_agent` callers, who see all customers' notifications "
+            "when omitted."
+        ),
+    ),
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(_allowed_roles),
+) -> list[Notification]:
+    query = _scoped_notifications(db, current_user)
+    if current_user.role == "support_agent" and customer_id is not None:
+        query = query.filter(Notification.customer_id == customer_id)
+    return query.order_by(Notification.notification_id).all()

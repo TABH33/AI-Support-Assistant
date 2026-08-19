@@ -53,3 +53,52 @@ export interface DrivingEvent {
   details: string | null
   created_at: string
 }
+
+/**
+ * Matches the `TicketStatus` enum in `backend/app/models/enums.py` exactly
+ * (values, not guessed names).
+ */
+export type TicketStatus = 'open' | 'in_progress' | 'resolved' | 'closed'
+
+/** Matches the `Priority` enum in `backend/app/models/enums.py`. */
+export type Priority = 'low' | 'medium' | 'high' | 'urgent'
+
+/**
+ * Matches the `PreferredNotificationMethod` enum in
+ * `backend/app/models/enums.py` (also reused as `Notification.notification_type`).
+ */
+export type NotificationType = 'email' | 'sms' | 'push' | 'in_app'
+
+/**
+ * Mirrors `SupportTicketOut` in `backend/app/api/chat.py` (Task 20's
+ * `GET /tickets` endpoint). Field names/nullability copied directly from
+ * that file, not guessed.
+ */
+export interface SupportTicket {
+  support_ticket_id: number
+  chat_session_id: number
+  customer_id: number
+  device_id: number
+  assigned_support_agent_id: number | null
+  ticket_status: TicketStatus
+  priority: Priority
+  subject: string | null
+  description: string | null
+  created_at: string
+  resolved_at: string | null
+}
+
+/**
+ * Mirrors `NotificationOut` in `backend/app/api/chat.py` (Task 20's
+ * `GET /notifications` endpoint). Field names/nullability copied directly
+ * from that file, not guessed.
+ */
+export interface Notification {
+  notification_id: number
+  support_ticket_id: number
+  customer_id: number
+  notification_type: NotificationType
+  message: string
+  sent_at: string | null
+  created_at: string
+}
