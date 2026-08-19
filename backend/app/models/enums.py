@@ -27,6 +27,14 @@ class DeviceStatus(str, Enum):
     OFFLINE = "offline"
 
 
+class BatteryStatus(str, Enum):
+    """Coarse battery-health bucket for a Device, per the source spec's `BatteryStatus` field."""
+
+    OK = "ok"
+    LOW = "low"
+    CRITICAL = "critical"
+
+
 class SessionStatus(str, Enum):
     ACTIVE = "active"
     ENDED = "ended"

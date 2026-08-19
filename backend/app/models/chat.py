@@ -6,7 +6,12 @@ ER relationships owned by these entities (ASS3 Sec 3):
 (ChatSession and SupportTicket are also the "Many" side of Customer's two
 1 -> Many relationships, and ChatSession is the "Many" side of Device's
 1 -> Many relationship; SupportTicket is the "Many" side of SupportAgent's
-1 -> Many relationship.)
+1 -> Many relationship. SupportTicket also carries a direct `device_id` FK
+per the authoritative field-level spec -- `SupportTicket: TicketID (PK),
+CustomerID (FK), DeviceID (FK), ChatSessionID (FK), TicketStatus, Priority,
+CreatedDate, ClosedDate, AssignedSupportAgent` -- even though the task
+brief's relationship-cardinality summary didn't separately list a
+Device -> SupportTicket relationship.)
 
 Note on `ai_confidence_score`: the Global Constraints example field list orders
 `AIConfidenceScore` immediately before `SessionStatus` and after Customer's
@@ -69,7 +74,13 @@ class ChatSession(Base):
 
 
 class SupportTicket(Base):
-    """A human-support escalation, created from at most one ChatSession."""
+    """A human-support escalation, created from at most one ChatSession.
+
+    Fields per the authoritative source spec:
+    `SupportTicket: TicketID (PK), CustomerID (FK), DeviceID (FK),
+    ChatSessionID (FK), TicketStatus, Priority, CreatedDate, ClosedDate,
+    AssignedSupportAgent`.
+    """
 
     __tablename__ = "support_tickets"
 
@@ -80,6 +91,7 @@ class SupportTicket(Base):
     customer_id: Mapped[int] = mapped_column(
         ForeignKey("customers.customer_id"), nullable=False
     )
+    device_id: Mapped[int] = mapped_column(ForeignKey("devices.device_id"), nullable=False)
     assigned_support_agent_id: Mapped[int | None] = mapped_column(
         ForeignKey("support_agents.support_agent_id"), nullable=True
     )
@@ -112,6 +124,7 @@ class SupportTicket(Base):
         "ChatSession", back_populates="support_ticket"
     )
     customer: Mapped["Customer"] = relationship("Customer", back_populates="support_tickets")
+    device: Mapped["Device"] = relationship("Device", back_populates="support_tickets")
     assigned_support_agent: Mapped["SupportAgent | None"] = relationship(
         "SupportAgent", back_populates="assigned_tickets"
     )

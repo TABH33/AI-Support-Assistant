@@ -34,6 +34,7 @@ from app.models import (
 )
 from app.models.enums import (
     AccessLevel,
+    BatteryStatus,
     DeviceStatus,
     DrivingEventType,
     PreferredNotificationMethod,
@@ -107,6 +108,9 @@ def test_all_eleven_entities_are_defined_and_instantiable():
         customer_id=1,
         serial_number="SN-0001",
         device_type="obd-ii",
+        battery_status=BatteryStatus.OK,
+        signal_strength=87,
+        last_seen=_now(),
         device_status=DeviceStatus.ACTIVE,
     )
     driver = Driver(full_name="Test Driver", license_number="LIC-0001")
@@ -121,6 +125,7 @@ def test_all_eleven_entities_are_defined_and_instantiable():
     support_ticket = SupportTicket(
         chat_session_id=1,
         customer_id=1,
+        device_id=1,
         ticket_status=TicketStatus.OPEN,
         priority=Priority.MEDIUM,
     )
@@ -190,6 +195,69 @@ def test_customer_one_to_many_device(session):
     session.refresh(customer)
     assert {d.serial_number for d in customer.devices} == {"SN-A", "SN-B"}
     assert device1.customer.customer_id == customer.customer_id
+
+
+def test_device_telemetry_fields_persist_and_round_trip(session):
+    """Device.battery_status, signal_strength, and last_seen (the three fields
+    from the authoritative source spec that were missing from the first pass
+    of this model) can be set explicitly and are read back correctly."""
+    customer = Customer(
+        full_name="Telemetry Customer",
+        email="telemetry@example.test",
+        phone_number="+61000000010",
+        preferred_notification_method=PreferredNotificationMethod.EMAIL,
+        password_hash="hashed",
+    )
+    session.add(customer)
+    session.flush()
+
+    seen_at = _now()
+    device = Device(
+        customer_id=customer.customer_id,
+        serial_number="SN-TELEMETRY",
+        device_type="obd-ii",
+        battery_status=BatteryStatus.CRITICAL,
+        signal_strength=13,
+        last_seen=seen_at,
+        device_status=DeviceStatus.ACTIVE,
+    )
+    session.add(device)
+    session.commit()
+    session.expire_all()
+
+    fetched = session.get(Device, device.device_id)
+    assert fetched.battery_status == BatteryStatus.CRITICAL
+    assert fetched.signal_strength == 13
+    assert fetched.last_seen is not None
+
+
+def test_device_battery_status_defaults_when_unspecified(session):
+    """battery_status has a model-level default and signal_strength/last_seen
+    are nullable, so a Device can be created without supplying them."""
+    customer = Customer(
+        full_name="Default Telemetry Customer",
+        email="defaulttelemetry@example.test",
+        phone_number="+61000000011",
+        preferred_notification_method=PreferredNotificationMethod.EMAIL,
+        password_hash="hashed",
+    )
+    session.add(customer)
+    session.flush()
+
+    device = Device(
+        customer_id=customer.customer_id,
+        serial_number="SN-DEFAULT",
+        device_type="obd-ii",
+        device_status=DeviceStatus.ACTIVE,
+    )
+    session.add(device)
+    session.commit()
+    session.expire_all()
+
+    fetched = session.get(Device, device.device_id)
+    assert fetched.battery_status == BatteryStatus.OK
+    assert fetched.signal_strength is None
+    assert fetched.last_seen is None
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +385,7 @@ def _make_customer_device_chat_session(session, suffix: str):
 
 
 def test_chat_session_has_at_most_one_support_ticket(session):
-    customer, _device, chat_session = _make_customer_device_chat_session(session, "T1")
+    customer, device, chat_session = _make_customer_device_chat_session(session, "T1")
 
     agent = SupportAgent(
         full_name="Agent Smith",
@@ -331,6 +399,7 @@ def test_chat_session_has_at_most_one_support_ticket(session):
     ticket = SupportTicket(
         chat_session_id=chat_session.chat_session_id,
         customer_id=customer.customer_id,
+        device_id=device.device_id,
         assigned_support_agent_id=agent.support_agent_id,
         ticket_status=TicketStatus.OPEN,
         priority=Priority.HIGH,
@@ -344,6 +413,7 @@ def test_chat_session_has_at_most_one_support_ticket(session):
     assert chat_session.support_ticket.support_ticket_id == ticket.support_ticket_id
     assert ticket.chat_session.chat_session_id == chat_session.chat_session_id
     assert ticket.customer.customer_id == customer.customer_id
+    assert ticket.device.device_id == device.device_id
     assert ticket.assigned_support_agent.support_agent_id == agent.support_agent_id
     assert agent.assigned_tickets[0].support_ticket_id == ticket.support_ticket_id
 
@@ -351,6 +421,7 @@ def test_chat_session_has_at_most_one_support_ticket(session):
     duplicate_ticket = SupportTicket(
         chat_session_id=chat_session.chat_session_id,
         customer_id=customer.customer_id,
+        device_id=device.device_id,
         ticket_status=TicketStatus.OPEN,
         priority=Priority.LOW,
     )
@@ -368,10 +439,11 @@ def test_chat_session_without_ticket_resolves_to_none(session):
 
 
 def test_support_ticket_one_to_many_notification(session):
-    customer, _device, chat_session = _make_customer_device_chat_session(session, "T3")
+    customer, device, chat_session = _make_customer_device_chat_session(session, "T3")
     ticket = SupportTicket(
         chat_session_id=chat_session.chat_session_id,
         customer_id=customer.customer_id,
+        device_id=device.device_id,
         ticket_status=TicketStatus.IN_PROGRESS,
         priority=Priority.URGENT,
     )
@@ -493,10 +565,14 @@ def test_full_entity_graph_persists_and_all_fks_resolve(session):
     session.add_all([customer, driver, vehicle, agent, kb_article])
     session.flush()
 
+    device_last_seen = _now()
     device = Device(
         customer_id=customer.customer_id,
         serial_number="SN-999",
         device_type="obd-ii",
+        battery_status=BatteryStatus.LOW,
+        signal_strength=42,
+        last_seen=device_last_seen,
         device_status=DeviceStatus.ACTIVE,
     )
     session.add(device)
@@ -522,6 +598,7 @@ def test_full_entity_graph_persists_and_all_fks_resolve(session):
     ticket = SupportTicket(
         chat_session_id=chat_session.chat_session_id,
         customer_id=customer.customer_id,
+        device_id=device.device_id,
         assigned_support_agent_id=agent.support_agent_id,
         ticket_status=TicketStatus.RESOLVED,
         priority=Priority.LOW,
@@ -549,11 +626,19 @@ def test_full_entity_graph_persists_and_all_fks_resolve(session):
     fetched_ticket = session.get(SupportTicket, ticket.support_ticket_id)
     assert fetched_ticket.chat_session.chat_session_id == chat_session.chat_session_id
     assert fetched_ticket.assigned_support_agent.support_agent_id == agent.support_agent_id
+    assert fetched_ticket.device.device_id == device.device_id
+    assert fetched_ticket.device.serial_number == "SN-999"
 
     fetched_chat_session = session.get(ChatSession, chat_session.chat_session_id)
     assert fetched_chat_session.customer.customer_id == customer.customer_id
     assert fetched_chat_session.device.device_id == device.device_id
     assert fetched_chat_session.support_ticket.support_ticket_id == ticket.support_ticket_id
+
+    fetched_device = session.get(Device, device.device_id)
+    assert fetched_device.battery_status == BatteryStatus.LOW
+    assert fetched_device.signal_strength == 42
+    assert fetched_device.last_seen is not None
+    assert fetched_device.support_tickets[0].support_ticket_id == ticket.support_ticket_id
 
     fetched_trip = session.get(Trip, trip.trip_id)
     assert fetched_trip.driver.driver_id == driver.driver_id
