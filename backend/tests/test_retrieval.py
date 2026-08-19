@@ -98,6 +98,33 @@ def test_rank_articles_by_similarity_returns_empty_list_for_no_articles():
     assert rank_articles_by_similarity([], [1.0, 0.0, 0.0], top_k=3) == []
 
 
+def test_rank_articles_by_similarity_uses_true_cosine_similarity_not_raw_dot_product():
+    """Regression guard for the `/ (norm_a * norm_b)` normalization in
+    `_cosine_similarity`. The two fixture embeddings below are chosen so
+    that an unnormalized dot product and true cosine similarity rank them
+    in OPPOSITE order -- so this test only passes if normalization is
+    actually applied, unlike the other fixtures above (whose near-equal
+    magnitudes mean dot product and cosine similarity happen to agree)."""
+    query_embedding = [1.0, 0.0]
+    # High magnitude, poorly aligned with the query: dot product = 1.0,
+    # but cosine similarity ~= 0.0995 (mostly orthogonal direction).
+    poorly_aligned_but_large = _article("Poorly aligned, large magnitude", [1.0, 10.0])
+    # Low magnitude, perfectly aligned with the query: dot product = 0.1,
+    # but cosine similarity = 1.0 (identical direction to the query).
+    aligned_but_small = _article("Perfectly aligned, small magnitude", [0.1, 0.0])
+
+    ranked = rank_articles_by_similarity(
+        [poorly_aligned_but_large, aligned_but_small], query_embedding, top_k=2
+    )
+
+    # Raw dot product would rank `poorly_aligned_but_large` first (1.0 > 0.1).
+    # True cosine similarity ranks `aligned_but_small` first (1.0 > ~0.0995).
+    assert [a.title for a in ranked] == [
+        "Perfectly aligned, small magnitude",
+        "Poorly aligned, large magnitude",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # build_top_k_articles_query: real pgvector query, verified by dialect
 # compilation only (no live Postgres available -- see module/test docstrings)
@@ -116,6 +143,14 @@ def test_build_top_k_articles_query_compiles_to_pgvector_cosine_distance_sql():
     assert "<=>" in compiled_sql  # pgvector's cosine-distance operator
     assert "ORDER BY" in compiled_sql
     assert "LIMIT 3" in compiled_sql
+    # Ascending distance = closest-first = most-similar-first, which is the
+    # correct ranking. Positively confirm ascending order (no `.desc()`
+    # anywhere in the statement) -- a future edit that accidentally added
+    # `.desc()` would silently invert the ranking to return the LEAST
+    # similar articles, and the assertions above alone wouldn't catch that.
+    assert "DESC" not in compiled_sql
+    order_by_clause = compiled_sql.split("ORDER BY", 1)[1].split("LIMIT", 1)[0]
+    assert order_by_clause.strip().startswith("knowledge_base_articles.embedding <=>")
 
 
 def test_build_top_k_articles_query_respects_a_different_top_k():
