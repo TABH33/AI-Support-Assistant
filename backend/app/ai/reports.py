@@ -93,7 +93,11 @@ _REPORT_SYSTEM_PROMPT = (
     "covering every section of data provided. If a section's data is empty, "
     "say so plainly (e.g. \"No risk alerts in the last 24 hours\") instead "
     "of omitting the section. This is an operational report, not an answer "
-    "to a question -- always produce a summary, never refuse."
+    "to a question -- always produce a summary, never refuse. "
+    "The fuel figure provided is an idling-time-based estimate, not a "
+    "direct fuel-consumption measurement. Always describe it as an "
+    "estimate/proxy in your summary, never state it as a literal fuel "
+    "reading."
 )
 
 

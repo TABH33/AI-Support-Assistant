@@ -285,6 +285,33 @@ def test_end_of_day_report_pulls_event_type_breakdown_and_driver_performance(db_
     assert fleet_a["driver2"].full_name in context
 
 
+def test_system_prompt_instructs_model_to_preserve_fuel_proxy_caveat_in_its_own_output(
+    db_session, fleet_a
+):
+    """The idling-as-fuel-proxy caveat is embedded in the context block sent
+    to the LLM (see `_format_event_type_breakdown`), but report generation is
+    free-form summarization -- unlike Task 13's constrained single-sentence
+    fallback contract, nothing stops a model from paraphrasing away the
+    caveat and presenting the idling-derived estimate as a literal fuel
+    reading. `_REPORT_SYSTEM_PROMPT` must explicitly instruct the model to
+    preserve that caveat in its OWN output, not just receive it as input.
+    Mirrors `test_chat_service.py`'s own pattern of asserting on the actual
+    system-message text passed to the mocked `chat_completion`."""
+    with patch("app.ai.reports.chat_completion", return_value="summary") as mock_chat:
+        generate_end_of_day_report(
+            fleet_a["customer"].customer_id,
+            db=db_session,
+            data_source=SyntheticDataSource(db_session),
+            now=_NOW,
+        )
+
+    messages = mock_chat.call_args[0][0]
+    system_content = messages[0]["content"]
+
+    assert "idling-time-based estimate" in system_content
+    assert "never state it as a literal fuel reading" in system_content
+
+
 def test_reports_never_leak_another_customers_data(db_session, fleet_a, fleet_b):
     """Cross-tenant isolation proof, mirroring test_chat_api.py's own
     cross-tenant tests: customer A's report context must never contain
