@@ -65,6 +65,52 @@ def test_preflight_request_from_allowed_origin_is_approved():
     assert "content-type" in allowed_headers
 
 
+def test_preflight_request_allows_patch_method():
+    """Task 22's `PATCH /chat/messages/{id}/feedback` endpoint (and the
+    frontend's `apiPatch` in `frontend/src/lib/apiClient.ts`) issue real
+    `PATCH` requests, which browsers always preflight. If `PATCH` isn't in
+    `allow_methods`, Starlette's `CORSMiddleware` rejects the preflight with
+    `400 Disallowed CORS method` and the browser never sends the real
+    request -- silently breaking thumbs up/down in every real browser
+    session (invisible to TestClient-based tests that don't check this
+    header)."""
+    client = TestClient(app)
+    response = client.options(
+        "/chat/messages/1/feedback",
+        headers={
+            "Origin": ALLOWED_ORIGIN,
+            "Access-Control-Request-Method": "PATCH",
+            "Access-Control-Request-Headers": "authorization,content-type",
+        },
+    )
+    assert response.status_code == 200
+    assert "PATCH" in response.headers["access-control-allow-methods"]
+
+
+def test_cors_allow_methods_covers_every_method_the_frontend_client_issues():
+    """`frontend/src/lib/apiClient.ts` defines `apiGet`, `apiPost`, `apiPut`,
+    `apiDelete`, and `apiPatch` -- every HTTP method the frontend is capable
+    of issuing. The CORS config must allow all of them, not just whichever
+    ones happen to be exercised by a specific preflight test above, so a
+    future new `apiPatch`/`apiDelete`/etc. call site doesn't silently regain
+    this same bug for a different method."""
+    frontend_methods = {"GET", "POST", "PUT", "DELETE", "PATCH"}
+    client = TestClient(app)
+    for method in frontend_methods:
+        response = client.options(
+            "/chat/messages/1/feedback",
+            headers={
+                "Origin": ALLOWED_ORIGIN,
+                "Access-Control-Request-Method": method,
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+        assert response.status_code == 200, f"{method} preflight was rejected"
+        assert method in response.headers["access-control-allow-methods"], (
+            f"{method} missing from access-control-allow-methods"
+        )
+
+
 def test_preflight_request_from_docker_compose_frontend_origin_is_approved():
     """The other origin this app actually runs from (see docker-compose.yml,
     which maps the `frontend` service's `serve` process to host port 3000)."""
