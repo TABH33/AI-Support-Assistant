@@ -97,7 +97,7 @@ export default function Drivers() {
           setDrivers(data)
           if (data.length > 0) {
             setSelectedDriverId(data[0].driver_id)
-            selectDriver(data[0].driver_id)
+            selectDriver(data[0].driver_id, data[0].customer_id)
           }
         }
       } catch (err) {
@@ -197,7 +197,7 @@ export default function Drivers() {
                     aria-pressed={driver.driver_id === selectedDriverId}
                     onClick={() => {
                       setSelectedDriverId(driver.driver_id)
-                      selectDriver(driver.driver_id)
+                      selectDriver(driver.driver_id, driver.customer_id)
                     }}
                     className={`w-full px-4 py-3 text-left text-sm ${
                       driver.driver_id === selectedDriverId

@@ -106,6 +106,12 @@ export default function Overview() {
   const { drivers, vehicles, trips } = data as OverviewData
 
   const driverNameById = new Map(drivers.map((driver) => [driver.driver_id, driver.full_name]))
+  // Trip has no `customer_id` of its own (see telematics.py's module
+  // docstring) -- resolve it transitively via the trip's driver, whose
+  // `customer_id` is authoritative (`DriverOut.customer_id`). Used when a
+  // trip row is selected, so `SelectionContext.selectedCustomerId` reflects
+  // the real owning customer rather than being left stale/wrong.
+  const driverCustomerById = new Map(drivers.map((driver) => [driver.driver_id, driver.customer_id]))
   const vehicleLabelById = new Map(
     vehicles.map((vehicle) => [
       vehicle.vehicle_id,
@@ -185,6 +191,7 @@ export default function Overview() {
                       tripId: trip.trip_id,
                       driverId: trip.driver_id,
                       vehicleId: trip.vehicle_id,
+                      customerId: driverCustomerById.get(trip.driver_id) ?? null,
                     })
                   }
                   aria-selected={trip.trip_id === selectedTripId}

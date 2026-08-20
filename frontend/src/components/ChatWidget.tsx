@@ -16,13 +16,31 @@
  *     message, not just the first -- the backend threads them into
  *     `retrieve_context` on every turn, regardless of session reuse.
  *   - `device_id` is REQUIRED the first time a session is created
- *     (`ChatSession.device_id` is NOT NULL). See `resolveNewSessionFields`
- *     below for how we source it, since no screen built so far has device
- *     selection UI.
+ *     (`ChatSession.device_id` is NOT NULL). See `resolveDeviceId` below for
+ *     how we source it, since no screen built so far has device selection
+ *     UI.
+ *   - `customer_id` is only honored (and only needed) for a `support_agent`
+ *     caller starting a new session -- see `handleSend`'s support_agent
+ *     branch below for where it comes from.
  *
  * Transparency requirement (ASS2, already established in Task 13's prompt
  * engineering): the widget must show a disclosure banner reading exactly
  * "You are talking to an AI assistant" the first time it's opened.
+ *
+ * **Fixed defect (post-review)**: an earlier version of this component
+ * resolved a `support_agent`'s `customer_id` from whichever device across
+ * ALL customers happened to have the most recent `last_seen` -- completely
+ * decoupled from whichever customer's driver/trip/vehicle the agent had
+ * actually selected in Overview/Drivers. That silently created the new
+ * `ChatSession` (and any later-escalated `SupportTicket`) against the
+ * wrong customer, and silently dropped the agent's real selection from
+ * `retrieve_context` (the scoped queries there return `None`/`[]` on a
+ * customer_id mismatch rather than raising, so nothing surfaced the bug).
+ * Fixed by deriving `customer_id` from `SelectionContext.selectedCustomerId`
+ * -- the `customer_id` captured at the moment the agent actually selected a
+ * driver/trip/vehicle (see `SelectionContext.tsx`) -- and refusing to start
+ * a new session at all (see `needsCustomerSelection` below) until that
+ * selection exists, instead of ever guessing.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiGet, apiPost } from '../lib/apiClient'
@@ -62,35 +80,34 @@ function markDisclosureSeen(): void {
 }
 
 /**
- * Resolves the `device_id` (and, for a `support_agent` caller, the
- * `customer_id`) needed to start a brand-new `/chat` session.
+ * Resolves the `device_id` needed to start a brand-new `/chat` session, by
+ * fetching devices and auto-selecting the most recently active one (highest
+ * `last_seen`, nulls sorted last), falling back to the first device in the
+ * (device_id-ordered) list if none has ever reported in. "Most recently
+ * active" is a better default than "first by id": the device the user is
+ * most likely asking about is the one that's actually been transmitting.
  *
  * Design gap this solves (per the task brief): `POST /chat` requires a
  * `device_id` when creating a new session, but no frontend screen built so
  * far (Overview/Drivers/Alerts) has device-selection UI -- devices aren't
  * listed anywhere yet. Building a full device picker is out of scope for
- * this task, so instead: fetch the caller's own devices via `GET /devices`
- * (Task 7, already tenant-scoped -- a `customer` caller only ever sees
- * their own devices) and auto-select the most recently active one (highest
- * `last_seen`, nulls sorted last), falling back to the first device in the
- * (device_id-ordered) list if none has ever reported in. "Most recently
- * active" is a better default than "first by id" for a support use case:
- * the device the user is most likely asking about is the one that's
- * actually been transmitting.
+ * this task, so this auto-selection stands in for one.
  *
- * For a `support_agent` caller, `GET /devices` returns devices across every
- * customer (Task 7's scoping only restricts `customer`-role callers), so
- * picking "the most recently active device" also picks an arbitrary
- * customer. We handle this by also returning that device's own
- * `customer_id` and sending it back as `ChatRequest.customer_id` -- which
- * `_create_new_session` in `chat.py` requires (and honors) for a
- * `support_agent` caller. This keeps the two ids self-consistent even
- * though which customer gets picked is arbitrary; a real support-agent UX
- * would let the agent pick a customer/device explicitly, but that's a
- * separate, larger feature outside this task's scope.
+ * `customerIdFilter`: which customer's devices to search.
+ *   - For a `customer` caller, omit it -- `GET /devices` (Task 7) is
+ *     already scoped to the caller's own `customer_id` via their JWT, so no
+ *     filter is needed (or honored -- Task 7 only applies `?customer_id=`
+ *     for a `support_agent` caller).
+ *   - For a `support_agent` caller, this MUST be the `customer_id` the
+ *     agent actually selected (`SelectionContext.selectedCustomerId`) --
+ *     never omitted -- otherwise `GET /devices` returns devices across
+ *     EVERY customer and "most recently active" would pick an arbitrary
+ *     one, silently attributing the new session to the wrong customer (see
+ *     this component's module docstring for the defect this replaced).
  */
-async function resolveNewSessionFields(): Promise<{ deviceId: number; customerId: number }> {
-  const devices = await apiGet<Device[]>('/devices')
+async function resolveDeviceId(customerIdFilter?: number): Promise<number> {
+  const endpoint = customerIdFilter === undefined ? '/devices' : `/devices?customer_id=${customerIdFilter}`
+  const devices = await apiGet<Device[]>(endpoint)
   if (devices.length === 0) {
     throw new Error('No devices found for this account -- cannot start a chat session.')
   }
@@ -103,12 +120,12 @@ async function resolveNewSessionFields(): Promise<{ deviceId: number; customerId
     }
   }
 
-  return { deviceId: chosen.device_id, customerId: chosen.customer_id }
+  return chosen.device_id
 }
 
 export function ChatWidget() {
   const { user } = useAuth()
-  const { selectedDriverId, selectedTripId, selectedVehicleId } = useSelection()
+  const { selectedDriverId, selectedTripId, selectedVehicleId, selectedCustomerId } = useSelection()
 
   const [isOpen, setIsOpen] = useState(false)
   const [showDisclosure, setShowDisclosure] = useState(false)
@@ -118,6 +135,17 @@ export function ChatWidget() {
   const [isSending, setIsSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
+
+  // A `support_agent` caller has no fleet of their own -- starting a NEW
+  // session requires knowing which customer this chat is about. Rather than
+  // ever guessing that (see the defect described in this file's module
+  // docstring), require the agent to have actually selected a
+  // driver/trip/vehicle somewhere (Overview/Drivers) first. Irrelevant once
+  // a session already exists: `customer_id` is fixed on the session from
+  // then on, so later selection changes don't need to (and shouldn't)
+  // re-block sending.
+  const needsCustomerSelection =
+    user?.role === 'support_agent' && sessionId === null && selectedCustomerId === null
 
   useEffect(() => {
     // `scrollIntoView` isn't implemented in jsdom (the test environment) --
@@ -148,6 +176,15 @@ export function ChatWidget() {
     const query = inputValue.trim()
     if (!query || isSending) return
 
+    // Defense in depth: the form is hidden/disabled whenever
+    // `needsCustomerSelection` is true (see the render below), but guard
+    // here too in case this is ever called some other way -- never fall
+    // through to guessing a customer.
+    if (needsCustomerSelection) {
+      setError('Select a driver or vehicle first so the assistant knows which customer this chat is about.')
+      return
+    }
+
     setError(null)
     setInputValue('')
     setMessages((prev) => [...prev, { id: `user-${Date.now()}`, role: 'user', content: query }])
@@ -163,10 +200,18 @@ export function ChatWidget() {
       }
 
       if (sessionId === null) {
-        const { deviceId, customerId } = await resolveNewSessionFields()
-        payload.device_id = deviceId
         if (user?.role === 'support_agent') {
+          // `needsCustomerSelection` guarantees `selectedCustomerId` is
+          // non-null here -- resolve devices scoped to THAT customer (Task
+          // 7's `?customer_id=` filter), never the unfiltered global list.
+          const customerId = selectedCustomerId as number
+          const deviceId = await resolveDeviceId(customerId)
+          payload.device_id = deviceId
           payload.customer_id = customerId
+        } else {
+          // A `customer` caller's own `GET /devices` call is already
+          // scoped to their JWT-derived customer_id -- no filter needed.
+          payload.device_id = await resolveDeviceId()
         }
       }
 
@@ -186,7 +231,17 @@ export function ChatWidget() {
     } finally {
       setIsSending(false)
     }
-  }, [inputValue, isSending, sessionId, selectedDriverId, selectedTripId, selectedVehicleId, user])
+  }, [
+    inputValue,
+    isSending,
+    needsCustomerSelection,
+    sessionId,
+    selectedDriverId,
+    selectedTripId,
+    selectedVehicleId,
+    selectedCustomerId,
+    user,
+  ])
 
   return (
     <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end">
@@ -256,30 +311,41 @@ export function ChatWidget() {
             </p>
           )}
 
-          <form
-            className="flex items-center gap-2 border-t border-gray-200 p-3 dark:border-gray-700"
-            onSubmit={(event) => {
-              event.preventDefault()
-              void handleSend()
-            }}
-          >
-            <input
-              type="text"
-              value={inputValue}
-              onChange={(event) => setInputValue(event.target.value)}
-              placeholder="Type a message…"
-              aria-label="Chat message"
-              disabled={isSending}
-              className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-600 dark:bg-gray-900 dark:text-white"
-            />
-            <button
-              type="submit"
-              disabled={isSending || inputValue.trim() === ''}
-              className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          {needsCustomerSelection ? (
+            <div
+              role="status"
+              data-testid="chat-needs-selection"
+              className="border-t border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
             >
-              Send
-            </button>
-          </form>
+              Select a driver or vehicle from Overview or Drivers first, so the assistant knows which
+              customer this chat is about.
+            </div>
+          ) : (
+            <form
+              className="flex items-center gap-2 border-t border-gray-200 p-3 dark:border-gray-700"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void handleSend()
+              }}
+            >
+              <input
+                type="text"
+                value={inputValue}
+                onChange={(event) => setInputValue(event.target.value)}
+                placeholder="Type a message…"
+                aria-label="Chat message"
+                disabled={isSending}
+                className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-600 dark:bg-gray-900 dark:text-white"
+              />
+              <button
+                type="submit"
+                disabled={isSending || inputValue.trim() === ''}
+                className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+              >
+                Send
+              </button>
+            </form>
+          )}
         </div>
       )}
 
