@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from app.ai.reports import generate_end_of_day_report, generate_start_of_day_report
 from app.auth.dependencies import CurrentUser, require_role
 from app.database import get_db
+from app.security.audit import ACTION_REPORT_GENERATED, record_audit_event
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -74,6 +75,14 @@ def post_start_of_day_report(
 ) -> ReportResponse:
     customer_id = _resolve_customer_id(payload, current_user)
     report = generate_start_of_day_report(customer_id, db=db)
+    # Task 23: audit every AI-generated recommendation shown to a user.
+    record_audit_event(
+        db,
+        actor_id=current_user.user_id,
+        actor_role=current_user.role,
+        action=ACTION_REPORT_GENERATED,
+        description=f"report_type=start_of_day customer_id={customer_id}",
+    )
     return ReportResponse(customer_id=customer_id, report=report)
 
 
@@ -85,4 +94,12 @@ def post_end_of_day_report(
 ) -> ReportResponse:
     customer_id = _resolve_customer_id(payload, current_user)
     report = generate_end_of_day_report(customer_id, db=db)
+    # Task 23: audit every AI-generated recommendation shown to a user.
+    record_audit_event(
+        db,
+        actor_id=current_user.user_id,
+        actor_role=current_user.role,
+        action=ACTION_REPORT_GENERATED,
+        description=f"report_type=end_of_day customer_id={customer_id}",
+    )
     return ReportResponse(customer_id=customer_id, report=report)

@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     ollama_model: str
     ollama_embed_model: str
     jwt_secret: str
+    # Base64-encoded symmetric key (>=32 raw bytes) used to derive the
+    # at-rest PII encryption subkeys in `app.security.crypto` (Task 23).
+    # Never hardcoded -- generate one with, e.g.,
+    # `python -c "import base64, os; print(base64.b64encode(os.urandom(32)).decode())"`.
+    encryption_key: str
     session_timeout_minutes: int
     escalation_confidence_threshold: float = 0.6
     # Comma-separated list of origins the frontend is served from, allowed to

@@ -5,6 +5,7 @@ for Alembic autogeneration, and (b) all string-based `relationship()` targets
 resolve when mappers are configured.
 """
 
+from app.models.audit import AuditLog
 from app.models.base import Base
 from app.models.chat import ChatMessage, ChatSession, Notification, SupportTicket
 from app.models.customer import Customer
@@ -27,4 +28,5 @@ __all__ = [
     "Notification",
     "SupportAgent",
     "KnowledgeBaseArticle",
+    "AuditLog",
 ]

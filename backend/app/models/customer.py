@@ -16,6 +16,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
 from app.models.enums import PreferredNotificationMethod
+from app.security.crypto import DeterministicEncryptedString, EncryptedString
 
 if TYPE_CHECKING:
     from app.models.chat import ChatSession, SupportTicket
@@ -29,9 +30,19 @@ class Customer(Base):
     __tablename__ = "customers"
 
     customer_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    full_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
-    phone_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    # PII encrypted at rest (Task 23 -- see `app.security.crypto`'s module
+    # docstring for the full scheme/tradeoff writeup). `full_name`/
+    # `phone_number` use randomized AES-256-GCM (`EncryptedString`) --
+    # nothing queries either by equality. `email` uses deterministic AES-SIV
+    # (`DeterministicEncryptedString`) instead, specifically because
+    # `POST /auth/login` (`app/api/auth.py`) does
+    # `Customer.email == credentials.email`: randomized ciphertext would
+    # never match on `==` again after the first encryption, breaking login.
+    # `unique=True` still enforces uniqueness correctly under deterministic
+    # encryption, since equal plaintext always encrypts to equal ciphertext.
+    full_name: Mapped[str] = mapped_column(EncryptedString, nullable=False)
+    email: Mapped[str] = mapped_column(DeterministicEncryptedString, nullable=False, unique=True)
+    phone_number: Mapped[str] = mapped_column(EncryptedString, nullable=False)
     preferred_notification_method: Mapped[PreferredNotificationMethod] = mapped_column(
         Enum(
             PreferredNotificationMethod,

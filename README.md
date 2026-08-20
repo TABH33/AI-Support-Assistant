@@ -68,6 +68,7 @@ The `.env` file controls all service configurations:
 - `OLLAMA_MODEL`: Main language model name (e.g., llama2)
 - `OLLAMA_EMBED_MODEL`: Embedding model name (e.g., nomic-embed-text)
 - `JWT_SECRET`: Secret key for JWT token signing (change in production)
+- `ENCRYPTION_KEY`: Base64-encoded symmetric key (>=32 raw bytes) for at-rest PII encryption (see "Security & Compliance" below; change in production)
 - `SESSION_TIMEOUT_MINUTES`: Session timeout duration
 - `VITE_API_BASE_URL`: Frontend API endpoint (baked at build time; changing this requires `docker compose build frontend` before restarting)
 
@@ -134,6 +135,65 @@ docker compose down -v
 - **Frontend**: React 18 + Vite application
 - **Database**: PostgreSQL with pgvector extension for vector embeddings
 - **LLM**: Ollama for local language model and embedding inference
+
+## Security & Compliance
+
+### At-rest PII encryption
+
+`Customer.full_name`, `Customer.email`, and `Customer.phone_number` are
+encrypted at rest (`backend/app/security/crypto.py`). `full_name`/
+`phone_number` use randomized AES-256-GCM (a fresh nonce every write);
+`email` uses deterministic AES-SIV instead, specifically because
+`POST /auth/login` looks a customer up by `Customer.email == <value>` --
+randomized ciphertext would never match that lookup again after the first
+write. Deterministic encryption's accepted tradeoff: it leaks whether two
+rows share the same email (equal ciphertext), though never the plaintext
+itself. Both modes derive independent subkeys via HKDF from one
+`ENCRYPTION_KEY` secret (see `.env.example`); losing that key makes
+existing encrypted rows permanently undecryptable, so back it up like any
+other production secret.
+
+### Audit logging
+
+Every AI-generated recommendation shown to a user is recorded in the
+`audit_logs` table (`backend/app/security/audit.py`): a chat answer
+(`POST /chat`, noting confidence and whether it was escalated) and a
+generated report (`POST /reports/start-of-day` / `/end-of-day`, noting the
+report type). Each entry records the actor's id/role, the action, a short
+description, and a timestamp. `action` is a plain string (not a fixed DB
+enum) so new action types -- e.g. a future support-agent ticket-status-change
+feature, which does not exist in this codebase yet -- can be logged without
+a schema migration.
+
+### HTTPS / TLS
+
+This application does not terminate TLS itself, and the local Docker
+Compose stack in this repo runs every service over plain HTTP on the
+Docker bridge network (`localhost:3000`/`8000`/`5432`/`11434`). This is a
+deliberate scope boundary, not an oversight:
+
+- TLS termination is normally handled by a reverse proxy or load balancer
+  sitting in front of the application (nginx, Traefik, Caddy, a cloud load
+  balancer, etc.), which is infrastructure that sits *outside* this
+  application's own containers and varies by deployment target (a
+  Kubernetes ingress, a cloud provider's managed LB, a bare-metal nginx
+  box...). Baking one specific choice into `docker-compose.yml` would
+  couple this POC to a deployment assumption the plan never asked it to
+  make, and none of the actual proxies above are meaningfully exercisable
+  without a real hostname + certificate anyway (self-signed certs mostly
+  just make local dev harder without proving anything about the real TLS
+  configuration).
+- For a real deployment, put a reverse proxy in front of the `backend`
+  and `frontend` services, terminate TLS there (e.g. via Let's Encrypt),
+  and forward plain HTTP to the containers on the internal network --
+  the FastAPI app and Vite-built frontend need no code changes to sit
+  behind such a proxy.
+- Secrets that matter regardless of transport (`JWT_SECRET`,
+  `ENCRYPTION_KEY`, `POSTGRES_PASSWORD`) are still never hardcoded and are
+  always sourced from `.env` (see `.env.example`), so this stack is not
+  "insecure by default" in the ways that are actually in this
+  application's control -- only transport-layer TLS termination is
+  explicitly out of scope for local Docker Compose.
 
 ## Troubleshooting
 

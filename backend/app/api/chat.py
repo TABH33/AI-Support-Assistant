@@ -49,6 +49,7 @@ from app.models.chat import ChatMessage, ChatSession, Notification, SupportTicke
 from app.models.device import Device
 from app.models.enums import ChatMessageRole, PreferredNotificationMethod, Priority, TicketStatus
 from app.repositories.chat import create_chat_session, create_notification, create_support_ticket
+from app.security.audit import ACTION_CHAT_ANSWER, record_audit_event
 
 router = APIRouter(tags=["chat"])
 
@@ -218,6 +219,18 @@ def post_chat(
     db.add(assistant_message)
     db.commit()
     db.refresh(assistant_message)
+
+    # Task 23: audit every AI-generated recommendation shown to a user.
+    record_audit_event(
+        db,
+        actor_id=current_user.user_id,
+        actor_role=current_user.role,
+        action=ACTION_CHAT_ANSWER,
+        description=(
+            f"chat_session_id={chat_session.chat_session_id} "
+            f"confidence={chat_answer.confidence:.3f} escalated={escalation_result.escalated}"
+        ),
+    )
 
     return ChatResponse(
         session_id=chat_session.chat_session_id,
