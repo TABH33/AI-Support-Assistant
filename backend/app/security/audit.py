@@ -43,18 +43,29 @@ def record_audit_event(
     action: str,
     description: str | None = None,
 ) -> AuditLog:
-    """Insert and commit one `AuditLog` row, mirroring
-    `app.repositories.chat`'s add-commit-refresh pattern for a single-purpose
-    persistence helper.
+    """Insert one `AuditLog` row, mirroring `app.repositories.chat`'s
+    add-flush-refresh pattern for a single-purpose persistence helper.
 
-    Deliberately swallows nothing: if the insert/commit fails (e.g. a
-    dropped DB connection), the exception propagates to the caller rather
-    than silently discarding the audit record -- audit logging that can
-    fail invisibly defeats its own purpose.
+    Flushes, does not commit (final-review Fix 6): this participates in
+    whatever transaction the caller already has open rather than owning its
+    own, so e.g. `POST /chat`'s audit entry is committed atomically together
+    with the chat messages/ticket/notification it describes in ONE
+    `db.commit()`, rather than as a separate commit that could fail on its
+    own -- which used to mean the user's answer could already be durably
+    persisted while the audit record silently never was (or vice versa: the
+    audit log commit failing after everything else succeeded still returned
+    a 500, discarding the user's already-good answer). Every caller
+    (`app/api/chat.py`, `app/api/reports.py`) is responsible for its own
+    final `db.commit()`.
+
+    Deliberately swallows nothing: if the insert/flush fails (e.g. a dropped
+    DB connection), the exception propagates to the caller rather than
+    silently discarding the audit record -- audit logging that can fail
+    invisibly defeats its own purpose.
     """
     entry = AuditLog(actor_id=actor_id, actor_role=actor_role, action=action, description=description)
     db.add(entry)
-    db.commit()
+    db.flush()
     db.refresh(entry)
     return entry
 

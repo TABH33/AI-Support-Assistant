@@ -92,8 +92,19 @@ def _get_or_create_escalation_ticket(
     answers for the same session racing each other -- the initial SELECT can
     still miss a not-yet-committed insert from the other request, so the
     insert itself is also wrapped in `try/except IntegrityError` with a
-    rollback + re-select fallback. Only a genuinely new ticket gets a new
+    re-select fallback. Only a genuinely new ticket gets a new
     `Notification`; a reused ticket does not send a duplicate one.
+
+    Final-review Fix 6 note: the insert attempt runs inside a `db.begin_nested()`
+    SAVEPOINT, not a plain `try/except`. `handle_answer` is called mid-way
+    through `POST /chat`'s single request-wide transaction (Fix 6: the chat
+    route now flushes-and-commits-once at the very end, not per-repository-
+    call), so a bare `db.rollback()` here on `IntegrityError` would discard
+    the ENTIRE transaction so far -- including the `ChatSession` row this
+    very call is escalating for, if it was just created earlier in the same
+    request -- not just the failed ticket insert. The SAVEPOINT scopes the
+    rollback to only the failed insert, leaving the rest of the request's
+    staged work intact.
     """
     existing = (
         db.query(SupportTicket)
@@ -104,16 +115,16 @@ def _get_or_create_escalation_ticket(
         return existing
 
     try:
-        ticket = create_support_ticket(
-            db,
-            chat_session_id=chat_session.chat_session_id,
-            customer_id=chat_session.customer_id,
-            device_id=chat_session.device_id,
-            subject="AI assistant could not confidently answer a customer question",
-            description=chat_answer.text,
-        )
+        with db.begin_nested():
+            ticket = create_support_ticket(
+                db,
+                chat_session_id=chat_session.chat_session_id,
+                customer_id=chat_session.customer_id,
+                device_id=chat_session.device_id,
+                subject="AI assistant could not confidently answer a customer question",
+                description=chat_answer.text,
+            )
     except IntegrityError:
-        db.rollback()
         existing = (
             db.query(SupportTicket)
             .filter(SupportTicket.chat_session_id == chat_session.chat_session_id)

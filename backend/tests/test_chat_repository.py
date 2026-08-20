@@ -220,7 +220,16 @@ def test_second_support_ticket_for_same_chat_session_raises_integrity_error(sess
     """Proves ChatSession 1 -> 0..1 SupportTicket is enforced at the DB level
     (the unique constraint Task 4 put on `SupportTicket.chat_session_id`),
     not merely assumed: a genuine second insert attempt for the same
-    `chat_session_id` must fail with `IntegrityError` on commit."""
+    `chat_session_id` must fail with `IntegrityError` on flush.
+
+    `create_chat_session`/`create_support_ticket` only `db.flush()`, not
+    `db.commit()` (final-review Fix 6 -- see `app/repositories/chat.py`'s
+    module docstring: the caller owns the transaction boundary). This test
+    commits explicitly right after the setup it needs to survive, so the
+    `session.rollback()` below -- which is scoped to undoing the FAILED
+    second insert, per this test's own point -- doesn't also wipe out the
+    chat_session/first_ticket rows it's asserting still exist afterward.
+    """
     customer, device = _make_customer_and_device(session, "ST2")
     chat_session = create_chat_session(
         session, customer_id=customer.customer_id, device_id=device.device_id
@@ -233,6 +242,7 @@ def test_second_support_ticket_for_same_chat_session_raises_integrity_error(sess
         device_id=device.device_id,
     )
     assert first_ticket.support_ticket_id is not None
+    session.commit()
 
     with pytest.raises(IntegrityError):
         create_support_ticket(

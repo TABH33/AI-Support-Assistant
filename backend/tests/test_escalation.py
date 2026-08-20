@@ -19,21 +19,29 @@ Covers:
     DB-level ChatSession 1 -> 0..1 SupportTicket constraint still applies,
     but `handle_answer` now selects for an existing ticket first, mirroring
     `app.api.chat._get_or_create_feedback_escalation_ticket`'s pattern.
+  * The theoretical concurrent race (two simultaneous low-confidence
+    answers for the same session) recovers via a `db.begin_nested()`
+    SAVEPOINT without rolling back unrelated work staged earlier in the
+    same outer transaction -- final-review Fix 6 made `handle_answer` run
+    mid-way through `POST /chat`'s single request-wide transaction, so a
+    bare `db.rollback()` on the race's `IntegrityError` would have been too
+    broad.
 """
 
 from __future__ import annotations
 
 import pytest
 from sqlalchemy import create_engine, event, select
+from sqlalchemy.orm import Query as SAQuery
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.ai.chat_service import FALLBACK_TEXT, ChatAnswer
-from app.ai.escalation import EscalationResult, handle_answer
+from app.ai.escalation import EscalationResult, _get_or_create_escalation_ticket, handle_answer
 from app.config import settings
 from app.models import Base, ChatSession, Customer, Device, Notification, SupportTicket
 from app.models.enums import DeviceStatus, PreferredNotificationMethod
-from app.repositories.chat import create_chat_session
+from app.repositories.chat import create_chat_session, create_support_ticket
 
 
 @pytest.fixture()
@@ -230,3 +238,68 @@ def test_escalating_twice_for_same_session_reuses_the_same_ticket(session):
         .all()
     )
     assert len(notifications) == 1
+
+
+def test_concurrent_ticket_race_recovers_via_savepoint_without_losing_other_staged_work(
+    session, monkeypatch
+):
+    """Defense-in-depth path (final-review Fix 6 interaction): simulates the
+    genuinely concurrent race two simultaneous low-confidence answers for
+    the same session could hit -- the initial SELECT misses a ticket a
+    "concurrent" insert already created, so `create_support_ticket`'s
+    INSERT hits the real UNIQUE constraint.
+
+    `_get_or_create_escalation_ticket` must recover via its except-block
+    re-select (finding the real, already-flushed ticket) AND must NOT roll
+    back unrelated work staged earlier in the same outer transaction --
+    proving the `db.begin_nested()` SAVEPOINT scopes the rollback to only
+    the failed insert, not the whole transaction. This matters because Fix 6
+    made `handle_answer` run mid-way through `POST /chat`'s single
+    request-wide transaction (one `db.commit()` at the very end) -- a plain
+    `db.rollback()` here would wipe out everything staged so far in that
+    request, e.g. `other_chat_session` below (standing in for the request's
+    own newly-created `ChatSession`), not just the failed duplicate insert.
+    """
+    chat_session = _make_chat_session(session, "RACE1")
+    # Stand-in for other work staged earlier in the SAME outer transaction
+    # (e.g. a newly-created ChatSession earlier in the same POST /chat
+    # request) -- must survive the SAVEPOINT-scoped recovery below.
+    other_chat_session = _make_chat_session(session, "RACE1-OTHER")
+
+    # Stand-in for "a concurrent request already won the race": a real
+    # SupportTicket for `chat_session`, flushed -- exactly as visible within
+    # this transaction as anything else here.
+    winning_ticket = create_support_ticket(
+        session,
+        chat_session_id=chat_session.chat_session_id,
+        customer_id=chat_session.customer_id,
+        device_id=chat_session.device_id,
+        subject="Concurrent request's ticket",
+    )
+
+    # Force exactly the NEXT `.one_or_none()` call -- `_get_or_create_
+    # escalation_ticket`'s own initial select-first check -- to report
+    # "nothing found", the way a genuine race's SELECT would if it ran just
+    # before the other transaction's insert became visible.
+    original_one_or_none = SAQuery.one_or_none
+    state = {"missed_once": False}
+
+    def _miss_once(self):
+        if not state["missed_once"]:
+            state["missed_once"] = True
+            return None
+        return original_one_or_none(self)
+
+    monkeypatch.setattr(SAQuery, "one_or_none", _miss_once)
+
+    answer = ChatAnswer(text="a low-confidence answer", confidence=0.0)
+    ticket = _get_or_create_escalation_ticket(
+        session, chat_session, answer, notification_type=PreferredNotificationMethod.IN_APP
+    )
+
+    assert ticket.support_ticket_id == winning_ticket.support_ticket_id
+
+    # The unrelated staged work survived -- the SAVEPOINT rollback did NOT
+    # take down the whole transaction.
+    session.expire_all()
+    assert session.get(ChatSession, other_chat_session.chat_session_id) is not None

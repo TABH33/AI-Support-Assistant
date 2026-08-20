@@ -76,6 +76,8 @@ def post_start_of_day_report(
     customer_id = _resolve_customer_id(payload, current_user)
     report = generate_start_of_day_report(customer_id, db=db)
     # Task 23: audit every AI-generated recommendation shown to a user.
+    # `record_audit_event` only flushes (final-review Fix 6) -- this route
+    # owns the actual commit, same as `POST /chat`.
     record_audit_event(
         db,
         actor_id=current_user.user_id,
@@ -83,6 +85,7 @@ def post_start_of_day_report(
         action=ACTION_REPORT_GENERATED,
         description=f"report_type=start_of_day customer_id={customer_id}",
     )
+    db.commit()
     return ReportResponse(customer_id=customer_id, report=report)
 
 
@@ -95,6 +98,8 @@ def post_end_of_day_report(
     customer_id = _resolve_customer_id(payload, current_user)
     report = generate_end_of_day_report(customer_id, db=db)
     # Task 23: audit every AI-generated recommendation shown to a user.
+    # `record_audit_event` only flushes (final-review Fix 6) -- this route
+    # owns the actual commit, same as `POST /chat`.
     record_audit_event(
         db,
         actor_id=current_user.user_id,
@@ -102,4 +107,5 @@ def post_end_of_day_report(
         action=ACTION_REPORT_GENERATED,
         description=f"report_type=end_of_day customer_id={customer_id}",
     )
+    db.commit()
     return ReportResponse(customer_id=customer_id, report=report)

@@ -217,10 +217,29 @@ def post_chat(
         )
     )
     db.add(assistant_message)
-    db.commit()
+    # Flush (not commit) -- final-review Fix 6: this whole request (session
+    # creation, escalation ticket/notification, both ChatMessage rows, and
+    # the audit log entry below) is ONE transaction, committed exactly once
+    # at the end. Before this fix, session/ticket/notification/message
+    # persistence were each their own separate commit, so a failure between
+    # e.g. the ticket commit and this message commit could strand a
+    # SupportTicket pointing at a ChatSession with zero messages -- nothing
+    # for a support agent to act on. `db.flush()` still assigns
+    # `assistant_message.chat_message_id` (needed for the response and for
+    # `db.refresh()` below), it just doesn't make any of it durable yet.
+    db.flush()
     db.refresh(assistant_message)
+    # Captured before `db.commit()` below expires the object's attributes --
+    # avoids an implicit post-commit SELECT just to re-read a PK we already
+    # know.
+    session_id = chat_session.chat_session_id
+    message_id = assistant_message.chat_message_id
 
     # Task 23: audit every AI-generated recommendation shown to a user.
+    # `record_audit_event` also only flushes (see its docstring) -- it joins
+    # this same transaction rather than risking a separate commit that could
+    # fail on its own after the user's answer was already persisted (the
+    # other half of the atomicity bug this fix closes).
     record_audit_event(
         db,
         actor_id=current_user.user_id,
@@ -232,9 +251,15 @@ def post_chat(
         ),
     )
 
+    # The single commit for the entire request -- everything staged above
+    # (possibly-new ChatSession, possibly-new SupportTicket/Notification,
+    # both ChatMessage rows, the AuditLog row) becomes durable together, or
+    # not at all.
+    db.commit()
+
     return ChatResponse(
-        session_id=chat_session.chat_session_id,
-        message_id=assistant_message.chat_message_id,
+        session_id=session_id,
+        message_id=message_id,
         answer=escalation_result.text,
         confidence=chat_answer.confidence,
         escalated=escalation_result.escalated,
@@ -470,13 +495,21 @@ def submit_message_feedback(
         )
 
     message.feedback = payload.feedback
-    db.commit()
-    db.refresh(message)
+    db.flush()
 
+    # Final-review Fix 6: `create_support_ticket`/`create_notification`
+    # (called via `_get_or_create_feedback_escalation_ticket` below) now
+    # only flush, not commit (see `app/repositories/chat.py`'s module
+    # docstring) -- this route owns a single `db.commit()` at the end, so
+    # the feedback flag and any resulting escalation ticket/notification
+    # become durable together, or not at all.
     support_ticket_id: int | None = None
     if payload.feedback is False:
         ticket = _get_or_create_feedback_escalation_ticket(db, chat_session, message)
         support_ticket_id = ticket.support_ticket_id
+
+    db.commit()
+    db.refresh(message)
 
     return ChatMessageFeedbackResponse(
         chat_message_id=message.chat_message_id,

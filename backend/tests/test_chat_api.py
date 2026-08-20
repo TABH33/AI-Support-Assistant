@@ -467,6 +467,52 @@ def test_two_consecutive_low_confidence_turns_reuse_the_same_ticket(client, db_s
     assert tickets[0].support_ticket_id is not None
 
 
+def test_failure_after_ticket_and_notification_leaves_no_stranded_rows(client, db_session, fleet_a):
+    """Final-review Fix 6 regression test: `POST /chat` used to perform
+    several independent `db.commit()` calls in sequence (session creation,
+    ticket/notification creation, message persistence, audit logging). If
+    anything failed between the ticket/notification commit and the
+    message-persistence commit, a support agent would end up with a
+    SupportTicket pointing at a ChatSession with zero messages -- nothing to
+    act on.
+
+    The route now stages everything (session, ticket, notification, both
+    ChatMessage rows, the AuditLog row) in ONE transaction and commits
+    exactly once at the very end. This simulates a failure AFTER the
+    escalation ticket/notification would have been flushed but BEFORE the
+    single final commit (patching `record_audit_event`, the very last write
+    before that commit, to raise) and proves the whole transaction rolls
+    back together -- no orphaned SupportTicket, no orphaned ChatSession, no
+    partial ChatMessage rows survive."""
+    with patch(
+        "app.ai.chat_service.chat_completion",
+        return_value="I think it might possibly be a battery issue?",
+    ), patch(
+        "app.api.chat.record_audit_event", side_effect=RuntimeError("simulated audit failure")
+    ):
+        with pytest.raises(RuntimeError):
+            client.post(
+                "/chat",
+                json={
+                    "query": "why is my device offline?",
+                    "device_id": fleet_a["device"].device_id,
+                },
+                headers=fleet_a["headers"],
+            )
+
+    # Simulates what the real `get_db` dependency's `finally: db.close()`
+    # would do on request teardown (this test's `client` fixture reuses one
+    # session directly across the whole test without closing it -- see
+    # module docstring -- so the rollback is done explicitly here to prove
+    # the property, not because production code needs a manual rollback).
+    db_session.rollback()
+    db_session.expire_all()
+
+    assert db_session.query(SupportTicket).count() == 0
+    assert db_session.query(ChatSession).count() == 0
+    assert db_session.query(ChatMessage).count() == 0
+
+
 # ---------------------------------------------------------------------------
 # Cross-tenant isolation: another customer's ids must not leak into context
 # ---------------------------------------------------------------------------
