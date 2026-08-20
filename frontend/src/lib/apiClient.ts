@@ -120,3 +120,19 @@ export async function apiPut<T>(
 export async function apiDelete<T>(endpoint: string): Promise<T> {
   return fetchAPI<T>(endpoint, { method: 'DELETE' })
 }
+
+/**
+ * Performs a PATCH request to the API.
+ * @param endpoint - The API endpoint
+ * @param data - The request body data
+ * @returns The parsed JSON response
+ */
+export async function apiPatch<T>(
+  endpoint: string,
+  data: unknown
+): Promise<T> {
+  return fetchAPI<T>(endpoint, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  })
+}

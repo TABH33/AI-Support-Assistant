@@ -41,12 +41,32 @@
  * driver/trip/vehicle (see `SelectionContext.tsx`) -- and refusing to start
  * a new session at all (see `needsCustomerSelection` below) until that
  * selection exists, instead of ever guessing.
+ *
+ * **Task 22 additions**: thumbs up/down feedback on each assistant message
+ * (`PATCH /chat/messages/{message_id}/feedback`), and a post-resolution CES
+ * (Customer Effort Score) micro-survey (`CesSurvey.tsx`, `POST
+ * /chat/sessions/{id}/survey`).
+ *
+ * **CES survey trigger -- design latitude call (per the task brief)**: the
+ * plan says "shown when a session ends," but no explicit "end session"
+ * backend action is wired into this widget (`ChatSession.session_status`/
+ * `end_time` are set by `end_chat_session` in `app/repositories/chat.py`,
+ * but nothing here calls it -- adding that call is out of scope per the
+ * brief's "don't over-engineer this" note). Of the brief's two suggested
+ * options, this picks (a), the simpler one: the survey is triggered when
+ * the user closes/dismisses the widget (`handleToggle`'s close path) after
+ * having sent at least one message this session (`sessionId !== null` is
+ * used as that signal -- it's only ever set once a full `POST /chat`
+ * round-trip has completed). `surveyResolved` (a plain boolean, not reset
+ * on reopen) ensures it's shown at most once per widget instance/session,
+ * whether the user submits a score or skips.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { apiGet, apiPost } from '../lib/apiClient'
+import { apiGet, apiPatch, apiPost } from '../lib/apiClient'
 import { useAuth } from '../context/AuthProvider'
 import { useSelection } from '../context/SelectionContext'
-import type { ChatRequest, ChatResponse } from '../types/chat'
+import { CesSurvey } from './CesSurvey'
+import type { ChatMessageFeedbackResponse, ChatRequest, ChatResponse } from '../types/chat'
 import type { Device } from '../types/telematics'
 
 interface ChatWidgetMessage {
@@ -55,6 +75,13 @@ interface ChatWidgetMessage {
   content: string
   /** Only ever `true` on an assistant message -- see `ChatResponse.escalated`. */
   escalated?: boolean
+  /** `ChatMessage.chat_message_id` (Task 22) -- only set on assistant
+   * messages, since only those can receive feedback. Used to target
+   * `PATCH /chat/messages/{chatMessageId}/feedback`. */
+  chatMessageId?: number
+  /** Thumbs up (`true`) / down (`false`) / not yet rated (`undefined`).
+   * Only meaningful on assistant messages. */
+  feedback?: boolean
 }
 
 /** sessionStorage key used to remember "the disclosure banner has already been shown this browser session" (POC-level persistence, per the task brief). */
@@ -134,6 +161,11 @@ export function ChatWidget() {
   const [sessionId, setSessionId] = useState<number | null>(null)
   const [isSending, setIsSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [showSurvey, setShowSurvey] = useState(false)
+  // Set once the CES survey has been submitted or skipped -- prevents it
+  // from being shown again for the lifetime of this widget instance (see
+  // module docstring's "CES survey trigger" note).
+  const [surveyResolved, setSurveyResolved] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement | null>(null)
 
   // A `support_agent` caller has no fleet of their own -- starting a NEW
@@ -154,22 +186,52 @@ export function ChatWidget() {
   }, [messages])
 
   const handleToggle = useCallback(() => {
-    setIsOpen((prev) => {
-      const next = !prev
-      if (next) {
-        // Only render the banner while open, and only the very first time
-        // this browser session opens the widget -- closing (or reopening
-        // later) must not bring it back, so it's reset to false here too.
-        const shouldShow = !hasSeenDisclosure()
-        setShowDisclosure(shouldShow)
-        if (shouldShow) {
-          markDisclosureSeen()
-        }
-      } else {
-        setShowDisclosure(false)
+    if (!isOpen) {
+      setIsOpen(true)
+      // Only render the banner while open, and only the very first time
+      // this browser session opens the widget -- closing (or reopening
+      // later) must not bring it back, so it's reset to false here too.
+      const shouldShow = !hasSeenDisclosure()
+      setShowDisclosure(shouldShow)
+      if (shouldShow) {
+        markDisclosureSeen()
       }
-      return next
-    })
+      return
+    }
+
+    // Closing: if a session exists (i.e. at least one message round-trip
+    // has completed -- see module docstring) and the survey hasn't already
+    // been resolved, show the CES micro-survey in place of actually
+    // closing. The survey's own onSubmit/onSkip callbacks (see the render
+    // below) perform the real close once the user is done with it.
+    if (sessionId !== null && !surveyResolved) {
+      setShowSurvey(true)
+      return
+    }
+
+    setShowDisclosure(false)
+    setIsOpen(false)
+  }, [isOpen, sessionId, surveyResolved])
+
+  const handleSurveyDone = useCallback(() => {
+    setSurveyResolved(true)
+    setShowSurvey(false)
+    setShowDisclosure(false)
+    setIsOpen(false)
+  }, [])
+
+  const handleFeedback = useCallback(async (messageId: string, chatMessageId: number, value: boolean) => {
+    // Optimistic update -- reflect the click immediately.
+    setMessages((prev) =>
+      prev.map((message) => (message.id === messageId ? { ...message, feedback: value } : message))
+    )
+    try {
+      await apiPatch<ChatMessageFeedbackResponse>(`/chat/messages/${chatMessageId}/feedback`, {
+        feedback: value,
+      })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to submit feedback.')
+    }
   }, [])
 
   const handleSend = useCallback(async () => {
@@ -224,6 +286,7 @@ export function ChatWidget() {
           role: 'assistant',
           content: response.answer,
           escalated: response.escalated,
+          chatMessageId: response.message_id,
         },
       ])
     } catch (err) {
@@ -263,88 +326,124 @@ export function ChatWidget() {
             </button>
           </div>
 
-          {showDisclosure && (
-            <div
-              role="status"
-              data-testid="chat-disclosure-banner"
-              className="border-b border-blue-200 bg-blue-50 px-4 py-2 text-xs text-blue-900 dark:border-blue-800 dark:bg-blue-900/40 dark:text-blue-200"
-            >
-              You are talking to an AI assistant.
-            </div>
-          )}
+          {showSurvey && sessionId !== null ? (
+            <CesSurvey sessionId={sessionId} onSubmit={handleSurveyDone} onSkip={handleSurveyDone} />
+          ) : (
+            <>
+              {showDisclosure && (
+                <div
+                  role="status"
+                  data-testid="chat-disclosure-banner"
+                  className="border-b border-blue-200 bg-blue-50 px-4 py-2 text-xs text-blue-900 dark:border-blue-800 dark:bg-blue-900/40 dark:text-blue-200"
+                >
+                  You are talking to an AI assistant.
+                </div>
+              )}
 
-          <div className="flex-1 space-y-2 overflow-y-auto px-3 py-3">
-            {messages.length === 0 && (
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                Ask a question about your fleet, drivers, or trips.
-              </p>
-            )}
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                data-testid={`chat-message-${message.role}`}
-                className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${
-                  message.role === 'user'
-                    ? 'ml-auto bg-indigo-600 text-white'
-                    : message.escalated
-                      ? 'border border-amber-400 bg-amber-50 text-amber-900 dark:border-amber-600 dark:bg-amber-900/30 dark:text-amber-200'
-                      : 'bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white'
-                }`}
-              >
-                {message.role === 'assistant' && message.escalated && (
-                  <p
-                    data-testid="chat-escalation-label"
-                    className="mb-1 flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300"
-                  >
-                    ⚠ Escalated to human support
+              <div className="flex-1 space-y-2 overflow-y-auto px-3 py-3">
+                {messages.length === 0 && (
+                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                    Ask a question about your fleet, drivers, or trips.
                   </p>
                 )}
-                <p>{message.content}</p>
+                {messages.map((message) => (
+                  <div key={message.id} className={message.role === 'user' ? 'ml-auto max-w-[85%]' : 'max-w-[85%]'}>
+                    <div
+                      data-testid={`chat-message-${message.role}`}
+                      className={`rounded-lg px-3 py-2 text-sm ${
+                        message.role === 'user'
+                          ? 'ml-auto bg-indigo-600 text-white'
+                          : message.escalated
+                            ? 'border border-amber-400 bg-amber-50 text-amber-900 dark:border-amber-600 dark:bg-amber-900/30 dark:text-amber-200'
+                            : 'bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white'
+                      }`}
+                    >
+                      {message.role === 'assistant' && message.escalated && (
+                        <p
+                          data-testid="chat-escalation-label"
+                          className="mb-1 flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300"
+                        >
+                          ⚠ Escalated to human support
+                        </p>
+                      )}
+                      <p>{message.content}</p>
+                    </div>
+                    {message.role === 'assistant' && message.chatMessageId !== undefined && (
+                      <div
+                        data-testid="chat-feedback-controls"
+                        className="mt-1 flex items-center gap-1.5 text-gray-400 dark:text-gray-500"
+                      >
+                        <button
+                          type="button"
+                          aria-label="Thumbs up"
+                          aria-pressed={message.feedback === true}
+                          onClick={() => void handleFeedback(message.id, message.chatMessageId as number, true)}
+                          className={`rounded px-1 text-sm hover:text-green-600 dark:hover:text-green-400 ${
+                            message.feedback === true ? 'text-green-600 dark:text-green-400' : ''
+                          }`}
+                        >
+                          👍
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="Thumbs down"
+                          aria-pressed={message.feedback === false}
+                          onClick={() => void handleFeedback(message.id, message.chatMessageId as number, false)}
+                          className={`rounded px-1 text-sm hover:text-red-600 dark:hover:text-red-400 ${
+                            message.feedback === false ? 'text-red-600 dark:text-red-400' : ''
+                          }`}
+                        >
+                          👎
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                <div ref={messagesEndRef} />
               </div>
-            ))}
-            <div ref={messagesEndRef} />
-          </div>
 
-          {error && (
-            <p role="alert" className="px-3 pb-1 text-xs text-red-600 dark:text-red-400">
-              {error}
-            </p>
-          )}
+              {error && (
+                <p role="alert" className="px-3 pb-1 text-xs text-red-600 dark:text-red-400">
+                  {error}
+                </p>
+              )}
 
-          {needsCustomerSelection ? (
-            <div
-              role="status"
-              data-testid="chat-needs-selection"
-              className="border-t border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
-            >
-              Select a driver or vehicle from Overview or Drivers first, so the assistant knows which
-              customer this chat is about.
-            </div>
-          ) : (
-            <form
-              className="flex items-center gap-2 border-t border-gray-200 p-3 dark:border-gray-700"
-              onSubmit={(event) => {
-                event.preventDefault()
-                void handleSend()
-              }}
-            >
-              <input
-                type="text"
-                value={inputValue}
-                onChange={(event) => setInputValue(event.target.value)}
-                placeholder="Type a message…"
-                aria-label="Chat message"
-                disabled={isSending}
-                className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-600 dark:bg-gray-900 dark:text-white"
-              />
-              <button
-                type="submit"
-                disabled={isSending || inputValue.trim() === ''}
-                className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-              >
-                Send
-              </button>
-            </form>
+              {needsCustomerSelection ? (
+                <div
+                  role="status"
+                  data-testid="chat-needs-selection"
+                  className="border-t border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
+                >
+                  Select a driver or vehicle from Overview or Drivers first, so the assistant knows which
+                  customer this chat is about.
+                </div>
+              ) : (
+                <form
+                  className="flex items-center gap-2 border-t border-gray-200 p-3 dark:border-gray-700"
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    void handleSend()
+                  }}
+                >
+                  <input
+                    type="text"
+                    value={inputValue}
+                    onChange={(event) => setInputValue(event.target.value)}
+                    placeholder="Type a message…"
+                    aria-label="Chat message"
+                    disabled={isSending}
+                    className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-600 dark:bg-gray-900 dark:text-white"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isSending || inputValue.trim() === ''}
+                    className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    Send
+                  </button>
+                </form>
+              )}
+            </>
           )}
         </div>
       )}

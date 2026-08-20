@@ -110,11 +110,37 @@ function loginAsSupportAgent() {
 
 /**
  * Routes mocked `fetch` calls to `GET /devices` (customer-100-scoped by
- * default, customer-200-scoped when `?customer_id=200` is present) and
- * `POST /chat` fixture responses.
+ * default, customer-200-scoped when `?customer_id=200` is present),
+ * `POST /chat`, `PATCH /chat/messages/{id}/feedback`, and
+ * `POST /chat/sessions/{id}/survey` fixture responses.
+ *
+ * `/feedback`/`/survey` are checked BEFORE the generic `/chat` check below,
+ * since both of those URLs (`/chat/messages/{id}/feedback`,
+ * `/chat/sessions/{id}/survey`) also contain the substring `/chat`.
  */
 function mockChatFetch({ escalated = false }: { escalated?: boolean } = {}) {
-  ;(fetch as unknown as Mock).mockImplementation(async (url: string) => {
+  ;(fetch as unknown as Mock).mockImplementation(async (url: string, options?: RequestInit) => {
+    if (url.includes('/feedback')) {
+      const body = JSON.parse((options?.body as string) ?? '{}')
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          chat_message_id: 555,
+          feedback: body.feedback,
+          escalated: body.feedback === false,
+          support_ticket_id: body.feedback === false ? 901 : null,
+        }),
+      }
+    }
+    if (url.includes('/survey')) {
+      const body = JSON.parse((options?.body as string) ?? '{}')
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ chat_session_id: 42, ces_score: body.score }),
+      }
+    }
     if (url.includes('/devices')) {
       const match = url.match(/customer_id=(\d+)/)
       if (match && Number(match[1]) === 200) {
@@ -128,6 +154,7 @@ function mockChatFetch({ escalated = false }: { escalated?: boolean } = {}) {
         status: 200,
         json: async () => ({
           session_id: 42,
+          message_id: 555,
           answer: escalated
             ? "I'm not confident enough to answer that -- a human agent will follow up."
             : 'Your vehicle traveled 42.5 km on its last trip.',
@@ -345,6 +372,140 @@ describe('ChatWidget', () => {
 
       // Nothing was silently guessed: no /chat or /devices call happened.
       expect(fetch).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('Task 22: message feedback', () => {
+    it('clicking thumbs-down on an assistant message PATCHes /chat/messages/{message_id}/feedback with feedback:false', async () => {
+      mockChatFetch()
+      renderWidget()
+
+      await openWidget()
+      await sendMessage('Why is my device offline?')
+      await waitFor(() => {
+        expect(screen.getByText('Your vehicle traveled 42.5 km on its last trip.')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: /thumbs down/i }))
+
+      await waitFor(() => {
+        const feedbackCall = (fetch as unknown as Mock).mock.calls.find(([url]) =>
+          (url as string).includes('/feedback')
+        )
+        expect(feedbackCall).toBeDefined()
+      })
+
+      const feedbackCall = (fetch as unknown as Mock).mock.calls.find(([url]) =>
+        (url as string).includes('/feedback')
+      ) as [string, RequestInit]
+      const [feedbackUrl, options] = feedbackCall
+      expect(feedbackUrl).toContain('/chat/messages/555/feedback')
+      expect(options.method).toBe('PATCH')
+      expect(JSON.parse(options.body as string)).toEqual({ feedback: false })
+
+      // Optimistic UI reflects the selection.
+      expect(screen.getByRole('button', { name: /thumbs down/i })).toHaveAttribute('aria-pressed', 'true')
+    })
+
+    it('clicking thumbs-up PATCHes feedback:true', async () => {
+      mockChatFetch()
+      renderWidget()
+
+      await openWidget()
+      await sendMessage('How many drivers do I have?')
+      await waitFor(() => {
+        expect(screen.getByText('Your vehicle traveled 42.5 km on its last trip.')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: /thumbs up/i }))
+
+      await waitFor(() => {
+        const feedbackCall = (fetch as unknown as Mock).mock.calls.find(([url]) =>
+          (url as string).includes('/feedback')
+        )
+        expect(feedbackCall).toBeDefined()
+      })
+
+      const [, options] = (fetch as unknown as Mock).mock.calls.find(([url]) =>
+        (url as string).includes('/feedback')
+      ) as [string, RequestInit]
+      expect(JSON.parse(options.body as string)).toEqual({ feedback: true })
+    })
+  })
+
+  describe('Task 22: CES survey trigger', () => {
+    it('shows the CES survey instead of closing when the widget is dismissed after a message was sent, and closes it after submitting a score', async () => {
+      mockChatFetch()
+      renderWidget()
+
+      await openWidget()
+      await sendMessage('How is my fleet doing?')
+      await waitFor(() => {
+        expect(screen.getByText('Your vehicle traveled 42.5 km on its last trip.')).toBeInTheDocument()
+      })
+
+      // Attempt to close -- the survey should appear instead of the widget
+      // actually closing.
+      fireEvent.click(screen.getByRole('button', { name: /minimize chat/i }))
+
+      expect(screen.getByTestId('ces-survey')).toBeInTheDocument()
+      expect(screen.getByRole('dialog', { name: /ai chat assistant/i })).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Score 5' }))
+      fireEvent.click(screen.getByRole('button', { name: /^submit$/i }))
+
+      await waitFor(() => {
+        const surveyCall = (fetch as unknown as Mock).mock.calls.find(([url]) =>
+          (url as string).includes('/survey')
+        )
+        expect(surveyCall).toBeDefined()
+      })
+
+      const [surveyUrl, surveyOptions] = (fetch as unknown as Mock).mock.calls.find(([url]) =>
+        (url as string).includes('/survey')
+      ) as [string, RequestInit]
+      expect(surveyUrl).toContain('/chat/sessions/42/survey')
+      expect(JSON.parse(surveyOptions.body as string)).toEqual({ score: 5 })
+
+      // The widget actually closes once the survey is resolved.
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog', { name: /ai chat assistant/i })).not.toBeInTheDocument()
+      })
+    })
+
+    it('skipping the CES survey closes the widget without posting a score', async () => {
+      mockChatFetch()
+      renderWidget()
+
+      await openWidget()
+      await sendMessage('How is my fleet doing?')
+      await waitFor(() => {
+        expect(screen.getByText('Your vehicle traveled 42.5 km on its last trip.')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: /minimize chat/i }))
+      expect(screen.getByTestId('ces-survey')).toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /^skip$/i }))
+
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog', { name: /ai chat assistant/i })).not.toBeInTheDocument()
+      })
+
+      expect((fetch as unknown as Mock).mock.calls.some(([url]) => (url as string).includes('/survey'))).toBe(
+        false
+      )
+    })
+
+    it('does not show the survey when closing the widget before any message has been sent', async () => {
+      mockChatFetch()
+      renderWidget()
+
+      await openWidget()
+      fireEvent.click(screen.getByRole('button', { name: /minimize chat/i }))
+
+      expect(screen.queryByTestId('ces-survey')).not.toBeInTheDocument()
+      expect(screen.queryByRole('dialog', { name: /ai chat assistant/i })).not.toBeInTheDocument()
     })
   })
 })

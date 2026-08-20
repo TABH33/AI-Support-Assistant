@@ -26,7 +26,39 @@ export interface ChatRequest {
 
 export interface ChatResponse {
   session_id: number
+  /** `ChatMessage.chat_message_id` of the assistant's turn (Task 22) --
+   * needed to submit thumbs up/down feedback via
+   * `PATCH /chat/messages/{message_id}/feedback`. */
+  message_id: number
   answer: string
   confidence: number
   escalated: boolean
+}
+
+/**
+ * TypeScript mirrors of Task 22's feedback/survey schemas
+ * (`ChatMessageFeedbackRequest`/`Response`, `CesSurveyRequest`/`Response`
+ * in `backend/app/api/chat.py`), copied directly from that file's Pydantic
+ * models.
+ */
+export interface ChatMessageFeedbackRequest {
+  feedback: boolean
+}
+
+export interface ChatMessageFeedbackResponse {
+  chat_message_id: number
+  feedback: boolean
+  escalated: boolean
+  support_ticket_id: number | null
+}
+
+/** `score`: Customer Effort Score, 1 (very easy) - 7 (very difficult) --
+ * the backend rejects anything outside that range with a 422. */
+export interface CesSurveyRequest {
+  score: number
+}
+
+export interface CesSurveyResponse {
+  chat_session_id: number
+  ces_score: number
 }

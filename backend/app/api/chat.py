@@ -37,7 +37,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Query as SAQuery, Session
 
 from app.ai.chat_service import answer_query
@@ -48,7 +48,7 @@ from app.database import get_db
 from app.models.chat import ChatMessage, ChatSession, Notification, SupportTicket
 from app.models.device import Device
 from app.models.enums import ChatMessageRole, PreferredNotificationMethod, Priority, TicketStatus
-from app.repositories.chat import create_chat_session
+from app.repositories.chat import create_chat_session, create_notification, create_support_ticket
 
 router = APIRouter(tags=["chat"])
 
@@ -89,9 +89,17 @@ class ChatRequest(BaseModel):
 
 
 class ChatResponse(BaseModel):
-    """`POST /chat` response body."""
+    """`POST /chat` response body.
+
+    `message_id`: the persisted `ChatMessage.chat_message_id` of the
+    assistant's turn (added in Task 22) -- the frontend needs this to submit
+    thumbs up/down feedback against the exact message via
+    `PATCH /chat/messages/{message_id}/feedback`, since nothing else in this
+    response identifies which `ChatMessage` row the answer became.
+    """
 
     session_id: int
+    message_id: int
     answer: str
     confidence: float
     escalated: bool
@@ -195,6 +203,11 @@ def post_chat(
     chat_answer = answer_query(payload.query, retrieved_context)
     escalation_result = handle_answer(db, chat_session.chat_session_id, chat_answer)
 
+    assistant_message = ChatMessage(
+        chat_session_id=chat_session.chat_session_id,
+        role=ChatMessageRole.ASSISTANT,
+        content=escalation_result.text,
+    )
     db.add(
         ChatMessage(
             chat_session_id=chat_session.chat_session_id,
@@ -202,17 +215,13 @@ def post_chat(
             content=payload.query,
         )
     )
-    db.add(
-        ChatMessage(
-            chat_session_id=chat_session.chat_session_id,
-            role=ChatMessageRole.ASSISTANT,
-            content=escalation_result.text,
-        )
-    )
+    db.add(assistant_message)
     db.commit()
+    db.refresh(assistant_message)
 
     return ChatResponse(
         session_id=chat_session.chat_session_id,
+        message_id=assistant_message.chat_message_id,
         answer=escalation_result.text,
         confidence=chat_answer.confidence,
         escalated=escalation_result.escalated,
@@ -314,3 +323,193 @@ def list_notifications(
     if current_user.role == "support_agent" and customer_id is not None:
         query = query.filter(Notification.customer_id == customer_id)
     return query.order_by(Notification.notification_id).all()
+
+
+# ---------------------------------------------------------------------------
+# `PATCH /chat/messages/{id}/feedback`, `POST /chat/sessions/{id}/survey` --
+# Task 22's feedback loop UI: thumbs up/down on an assistant `ChatMessage`,
+# and a post-resolution Customer Effort Score (CES) micro-survey per
+# `ChatSession`.
+#
+# RBAC/scoping mirrors the rest of this module: `require_role("customer",
+# "support_agent")`, and a `customer`-role caller can only act on a message
+# whose `ChatSession.customer_id` (feedback) / a session (survey) is their
+# own -- identical "don't leak existence, 404 either way" posture as
+# `_resolve_existing_session` above. `support_agent` is unrestricted, same as
+# every other route in this file.
+#
+# Thumbs-down idempotency (the brief's core requirement): `ChatSession 1 ->
+# 0..1 SupportTicket` is a DB-level UNIQUE constraint on
+# `SupportTicket.chat_session_id` (Task 4's schema; see Task 8's
+# `create_support_ticket` docstring). Task 14's `handle_answer` never has to
+# worry about a duplicate because a session is only auto-escalated once (at
+# most one low-confidence answer triggers it, and nothing re-runs
+# `handle_answer` for an already-escalated session). Feedback is different:
+# a customer can press thumbs-down on the same message repeatedly (double
+# click, retry after a flaky network response, etc.), and a session's
+# assistant answer might ALREADY have been auto-escalated by Task 14 before
+# the customer ever presses thumbs-down. Both cases must be a no-op, not an
+# `IntegrityError` -- so `_get_or_create_feedback_escalation_ticket` always
+# SELECTs for an existing ticket first (never blindly calls
+# `create_support_ticket` and catches the exception).
+# ---------------------------------------------------------------------------
+
+
+class ChatMessageFeedbackRequest(BaseModel):
+    """`PATCH /chat/messages/{id}/feedback` request body."""
+
+    feedback: bool
+
+
+class ChatMessageFeedbackResponse(BaseModel):
+    """`PATCH /chat/messages/{id}/feedback` response body.
+
+    `escalated`/`support_ticket_id` report whether this session now has a
+    (new-or-pre-existing) `SupportTicket` as a result of this call -- always
+    populated together with `feedback=False`, always `False`/`None` for
+    `feedback=True` (a thumbs-up never escalates).
+    """
+
+    chat_message_id: int
+    feedback: bool
+    escalated: bool
+    support_ticket_id: int | None
+
+
+#: Message stored on the `Notification` created when a thumbs-down triggers
+#: an escalation ticket -- mirrors `app.ai.escalation._ESCALATION_NOTIFICATION_MESSAGE`'s
+#: wording/purpose for the low-confidence auto-escalation path.
+_FEEDBACK_ESCALATION_NOTIFICATION_MESSAGE = (
+    "Your negative feedback on an AI assistant response has been escalated "
+    "to a support agent. A support ticket has been created and an agent "
+    "will follow up with you."
+)
+
+
+def _get_or_create_feedback_escalation_ticket(
+    db: Session, chat_session: ChatSession, message: ChatMessage
+) -> SupportTicket:
+    """Idempotently escalate a thumbs-down assistant response to a human
+    support ticket, reusing Task 8's `create_support_ticket`/
+    `create_notification` (the same repository functions Task 14's
+    `handle_answer` uses for the low-confidence auto-escalation path).
+
+    `ChatSession 1 -> 0..1 SupportTicket` (Task 4's UNIQUE constraint on
+    `SupportTicket.chat_session_id`) means at most one ticket can ever exist
+    per session. This SELECTs for an existing ticket for
+    `chat_session.chat_session_id` FIRST -- rather than calling
+    `create_support_ticket` and catching the `IntegrityError` it would raise
+    on a duplicate insert -- so pressing thumbs-down twice (or thumbs-down
+    on a session Task 14 already auto-escalated for low confidence) reuses
+    the existing ticket instead of erroring.
+    """
+    existing = (
+        db.query(SupportTicket)
+        .filter(SupportTicket.chat_session_id == chat_session.chat_session_id)
+        .one_or_none()
+    )
+    if existing is not None:
+        return existing
+
+    ticket = create_support_ticket(
+        db,
+        chat_session_id=chat_session.chat_session_id,
+        customer_id=chat_session.customer_id,
+        device_id=chat_session.device_id,
+        subject="Customer gave thumbs-down feedback on an AI assistant response",
+        description=message.content,
+    )
+    create_notification(
+        db,
+        support_ticket_id=ticket.support_ticket_id,
+        customer_id=chat_session.customer_id,
+        notification_type=PreferredNotificationMethod.IN_APP,
+        message=_FEEDBACK_ESCALATION_NOTIFICATION_MESSAGE,
+    )
+    return ticket
+
+
+@router.patch("/chat/messages/{chat_message_id}/feedback", response_model=ChatMessageFeedbackResponse)
+def submit_message_feedback(
+    chat_message_id: int,
+    payload: ChatMessageFeedbackRequest,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(_allowed_roles),
+) -> ChatMessageFeedbackResponse:
+    message = db.get(ChatMessage, chat_message_id)
+    if message is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Chat message not found")
+
+    chat_session = db.get(ChatSession, message.chat_session_id)
+    if chat_session is None or (
+        current_user.role == "customer" and chat_session.customer_id != current_user.user_id
+    ):
+        # Identical 404 for "no such message" and "exists but isn't yours" --
+        # same cross-tenant posture as `_resolve_existing_session` above.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Chat message not found")
+
+    if message.role != ChatMessageRole.ASSISTANT:
+        # Per `ChatMessage.feedback`'s own docstring (Task 15): there is no
+        # feedback concept for a `role=user` row.
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Feedback can only be given on an assistant message",
+        )
+
+    message.feedback = payload.feedback
+    db.commit()
+    db.refresh(message)
+
+    support_ticket_id: int | None = None
+    if payload.feedback is False:
+        ticket = _get_or_create_feedback_escalation_ticket(db, chat_session, message)
+        support_ticket_id = ticket.support_ticket_id
+
+    return ChatMessageFeedbackResponse(
+        chat_message_id=message.chat_message_id,
+        feedback=message.feedback,
+        escalated=support_ticket_id is not None,
+        support_ticket_id=support_ticket_id,
+    )
+
+
+class CesSurveyRequest(BaseModel):
+    """`POST /chat/sessions/{id}/survey` request body.
+
+    `score`: a Customer Effort Score on the standard 1 (very easy) - 7 (very
+    difficult) CES-7 scale. Range is validated here (422 outside 1-7) --
+    there is no CHECK constraint at the DB layer (POC-level rigor, matching
+    `ChatMessage.feedback`'s own docstring on not adding a CHECK constraint
+    for a similarly-scoped rule).
+    """
+
+    score: int = Field(ge=1, le=7)
+
+
+class CesSurveyResponse(BaseModel):
+    """`POST /chat/sessions/{id}/survey` response body."""
+
+    chat_session_id: int
+    ces_score: int
+
+
+@router.post("/chat/sessions/{chat_session_id}/survey", response_model=CesSurveyResponse)
+def submit_ces_survey(
+    chat_session_id: int,
+    payload: CesSurveyRequest,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(_allowed_roles),
+) -> CesSurveyResponse:
+    # Reuses `_resolve_existing_session`'s exact ownership check: a
+    # `customer`-role caller can only survey a session that belongs to them
+    # (identical 404-either-way posture), `support_agent` is unrestricted.
+    chat_session = _resolve_existing_session(db, chat_session_id, current_user)
+
+    chat_session.ces_score = payload.score
+    db.commit()
+    db.refresh(chat_session)
+
+    return CesSurveyResponse(
+        chat_session_id=chat_session.chat_session_id,
+        ces_score=chat_session.ces_score,
+    )

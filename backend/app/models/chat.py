@@ -23,7 +23,7 @@ ChatSession accordingly -- see task report for this interpretation call.
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, Enum, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -65,6 +65,13 @@ class ChatSession(Base):
     )
     end_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ai_confidence_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Customer Effort Score (Task 22): a nullable post-resolution
+    # micro-survey result, stored once (via `POST /chat/sessions/{id}/survey`)
+    # after a session ends. `None` means no survey response has been
+    # submitted yet -- the survey is optional/skippable, so this stays `None`
+    # for most sessions. No fixed scale is enforced at the model layer (the
+    # API layer validates the range -- see `backend/app/api/chat.py`).
+    ces_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
