@@ -415,6 +415,58 @@ def test_escalation_path_returns_escalated_true_and_fallback_text(client, db_ses
     assert messages[0].content == FALLBACK_TEXT
 
 
+def test_two_consecutive_low_confidence_turns_reuse_the_same_ticket(client, db_session, fleet_a):
+    """Final-review Fix 2 regression test: before the fix, a second
+    low-confidence answer in the SAME session hit Task 8's DB-level
+    ChatSession 1 -> 0..1 SupportTicket UNIQUE constraint and raised an
+    unhandled `IntegrityError` all the way up to an unhandled 500 (Task 14's
+    `handle_answer` called `create_support_ticket` unconditionally, with no
+    select-first check). The second turn must instead return a normal 200
+    response and reuse the SAME `support_ticket_id` as the first, with
+    exactly one `SupportTicket` row in the DB afterward."""
+    with patch(
+        "app.ai.chat_service.chat_completion",
+        return_value="I think it might possibly be a battery issue?",
+    ):
+        first_response = client.post(
+            "/chat",
+            json={
+                "query": "why is my device offline?",
+                "device_id": fleet_a["device"].device_id,
+            },
+            headers=fleet_a["headers"],
+        )
+    assert first_response.status_code == 200
+    first_body = first_response.json()
+    assert first_body["escalated"] is True
+    session_id = first_body["session_id"]
+
+    with patch(
+        "app.ai.chat_service.chat_completion",
+        return_value="Still not sure, maybe try rebooting?",
+    ):
+        second_response = client.post(
+            "/chat",
+            json={
+                "query": "it's still offline, what now?",
+                "session_id": session_id,
+            },
+            headers=fleet_a["headers"],
+        )
+
+    assert second_response.status_code == 200
+    second_body = second_response.json()
+    assert second_body["escalated"] is True
+    assert second_body["answer"] == FALLBACK_TEXT
+
+    db_session.expire_all()
+    tickets = (
+        db_session.query(SupportTicket).filter_by(chat_session_id=session_id).all()
+    )
+    assert len(tickets) == 1
+    assert tickets[0].support_ticket_id is not None
+
+
 # ---------------------------------------------------------------------------
 # Cross-tenant isolation: another customer's ids must not leak into context
 # ---------------------------------------------------------------------------
@@ -547,10 +599,9 @@ def test_support_agent_can_start_session_for_a_specific_customer(
 def test_support_agent_can_reuse_any_customers_session(client, db_session, fleet_a, support_agent_headers):
     # Both turns resolve real telematics context (+ a seeded KB article) so
     # confidence stays above the escalation threshold on both calls -- a
-    # second low-confidence escalation for the same session would hit Task
-    # 8's ChatSession 1 -> 0..1 SupportTicket UNIQUE constraint (expected,
-    # tested separately in test_escalation.py), which isn't what this test
-    # is about.
+    # second low-confidence escalation for the same session is exercised
+    # separately (see test_two_consecutive_low_confidence_turns_reuse_the_same_ticket
+    # below and test_escalation.py), which isn't what this test is about.
     _seed_article(db_session)
 
     with patch("app.ai.chat_service.chat_completion", return_value="An answer."):

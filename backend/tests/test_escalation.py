@@ -14,16 +14,17 @@ Covers:
     (re-fetched from the DB, not just inspected off the return value).
   * The threshold comparison direction: exactly-at-threshold does NOT
     escalate ("below threshold" escalates, not "at or below").
-  * Escalating twice for the same session raises `IntegrityError` (Task 8's
-    DB-level ChatSession 1 -> 0..1 SupportTicket constraint), not silently
-    creating a second ticket.
+  * Escalating twice for the same session (final-review Fix 2) reuses the
+    SAME `SupportTicket` instead of raising `IntegrityError` -- Task 8's
+    DB-level ChatSession 1 -> 0..1 SupportTicket constraint still applies,
+    but `handle_answer` now selects for an existing ticket first, mirroring
+    `app.api.chat._get_or_create_feedback_escalation_ticket`'s pattern.
 """
 
 from __future__ import annotations
 
 import pytest
 from sqlalchemy import create_engine, event, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
@@ -193,19 +194,39 @@ def test_unknown_chat_session_raises_value_error(session):
         handle_answer(session, 999_999, answer)
 
 
-def test_escalating_twice_for_same_session_raises_integrity_error(session):
-    """Task 8's DB-level ChatSession 1 -> 0..1 SupportTicket constraint applies
-    here too: a second escalation for the same session must not silently
-    create a second ticket."""
+def test_escalating_twice_for_same_session_reuses_the_same_ticket(session):
+    """Final-review Fix 2 regression test: a second low-confidence answer in
+    the SAME session used to hit Task 8's DB-level ChatSession 1 -> 0..1
+    SupportTicket UNIQUE constraint and raise an unhandled `IntegrityError`
+    (-> 500 at the API layer). `handle_answer` must instead select for the
+    existing ticket first and reuse it -- no error, no second ticket, no
+    second notification."""
     chat_session = _make_chat_session(session, "LC3")
     first_answer = ChatAnswer(text="first low-confidence answer", confidence=0.0)
-    handle_answer(session, chat_session.chat_session_id, first_answer)
+    first_result = handle_answer(session, chat_session.chat_session_id, first_answer)
+    assert first_result.escalated is True
+    assert first_result.support_ticket_id is not None
 
     second_answer = ChatAnswer(text="second low-confidence answer", confidence=0.0)
-    with pytest.raises(IntegrityError):
-        handle_answer(session, chat_session.chat_session_id, second_answer)
-    session.rollback()
+    second_result = handle_answer(session, chat_session.chat_session_id, second_answer)
+
+    assert second_result.escalated is True
+    assert second_result.text == FALLBACK_TEXT
+    assert second_result.support_ticket_id == first_result.support_ticket_id
 
     session.expire_all()
     tickets = _tickets_for_session(session, chat_session.chat_session_id)
     assert len(tickets) == 1
+
+    # Only the FIRST escalation should have created a Notification -- the
+    # second call reused the ticket rather than creating a duplicate.
+    notifications = list(
+        session.execute(
+            select(Notification).where(
+                Notification.support_ticket_id == first_result.support_ticket_id
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(notifications) == 1
