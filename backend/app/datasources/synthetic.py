@@ -13,14 +13,17 @@ almost verbatim. No caching, no new query logic invented here.
 RBAC (roles, tokens, `CurrentUser`) is deliberately absent -- this class
 takes a plain `Session` and plain `int` ids/customer_id, same shape as the
 plan's Task 8 repository module (`app/repositories/chat.py`). Tenant
-*scoping*, however, is present: each ID-keyed method accepts the optional
-`customer_id` documented in `base.py` and, when given, applies the same
-transitive-join filtering `app/api/telematics.py` (Task 7)'s `_scoped_*`
-helpers already use -- `Driver`/`Vehicle` filter directly on their own
-`customer_id` column; `Trip`/`DrivingEvent` (no `customer_id` column of
-their own) join to `Driver` and filter there, exactly mirroring Task 7's
-`_scoped_trips`. Passing `customer_id=None` skips that filter entirely,
-reproducing the unscoped query.
+*scoping*, however, is present: each ID-keyed method accepts the required
+(final-review Fix 8), keyword-only `customer_id` documented in `base.py`
+and, when its VALUE is not `None`, applies the same transitive-join
+filtering `app/api/telematics.py` (Task 7)'s `_scoped_*` helpers already
+use -- `Driver`/`Vehicle` filter directly on their own `customer_id`
+column; `Trip`/`DrivingEvent` (no `customer_id` column of their own) join
+to `Driver` and filter there, exactly mirroring Task 7's `_scoped_trips`.
+Passing `customer_id=None` explicitly still skips that filter, reproducing
+the unscoped query -- what changed is that omitting the argument entirely
+is no longer possible (a `TypeError` at the call site, not a silent
+unscoped default).
 
 The Task 16 fleet-wide `list_*` methods below apply that exact same
 `_scoped_*` query shape, just with `customer_id` required instead of
@@ -48,19 +51,19 @@ class SyntheticDataSource(TelematicsDataSource):
     def __init__(self, db: Session) -> None:
         self._db = db
 
-    def get_driver(self, driver_id: int, customer_id: int | None = None) -> Driver | None:
+    def get_driver(self, driver_id: int, *, customer_id: int | None) -> Driver | None:
         query = self._db.query(Driver).filter(Driver.driver_id == driver_id)
         if customer_id is not None:
             query = query.filter(Driver.customer_id == customer_id)
         return query.one_or_none()
 
-    def get_vehicle(self, vehicle_id: int, customer_id: int | None = None) -> Vehicle | None:
+    def get_vehicle(self, vehicle_id: int, *, customer_id: int | None) -> Vehicle | None:
         query = self._db.query(Vehicle).filter(Vehicle.vehicle_id == vehicle_id)
         if customer_id is not None:
             query = query.filter(Vehicle.customer_id == customer_id)
         return query.one_or_none()
 
-    def get_trip(self, trip_id: int, customer_id: int | None = None) -> Trip | None:
+    def get_trip(self, trip_id: int, *, customer_id: int | None) -> Trip | None:
         query = self._db.query(Trip).filter(Trip.trip_id == trip_id)
         if customer_id is not None:
             query = query.join(Driver, Trip.driver_id == Driver.driver_id).filter(
@@ -69,7 +72,7 @@ class SyntheticDataSource(TelematicsDataSource):
         return query.one_or_none()
 
     def get_trips_for_driver(
-        self, driver_id: int, customer_id: int | None = None
+        self, driver_id: int, *, customer_id: int | None
     ) -> list[Trip]:
         query = self._db.query(Trip).filter(Trip.driver_id == driver_id)
         if customer_id is not None:
@@ -79,7 +82,7 @@ class SyntheticDataSource(TelematicsDataSource):
         return query.order_by(Trip.trip_id).all()
 
     def get_driving_events(
-        self, trip_id: int, customer_id: int | None = None
+        self, trip_id: int, *, customer_id: int | None
     ) -> list[DrivingEvent]:
         query = self._db.query(DrivingEvent).filter(DrivingEvent.trip_id == trip_id)
         if customer_id is not None:

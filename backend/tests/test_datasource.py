@@ -158,7 +158,7 @@ def test_get_driver_returns_expected_driver(session, data_source):
     fleet = _make_fleet(session, "D1")
     session.expire_all()
 
-    fetched = data_source.get_driver(fleet["driver"].driver_id)
+    fetched = data_source.get_driver(fleet["driver"].driver_id, customer_id=None)
 
     assert fetched is not None
     assert fetched.driver_id == fleet["driver"].driver_id
@@ -166,21 +166,21 @@ def test_get_driver_returns_expected_driver(session, data_source):
 
 
 def test_get_driver_returns_none_for_unknown_id(data_source):
-    assert data_source.get_driver(999_999) is None
+    assert data_source.get_driver(999_999, customer_id=None) is None
 
 
 def test_get_vehicle_returns_expected_vehicle(session, data_source):
     fleet = _make_fleet(session, "V1")
     session.expire_all()
 
-    fetched = data_source.get_vehicle(fleet["vehicle"].vehicle_id)
+    fetched = data_source.get_vehicle(fleet["vehicle"].vehicle_id, customer_id=None)
 
     assert fetched is not None
     assert fetched.registration_number == "REG-V1"
 
 
 def test_get_vehicle_returns_none_for_unknown_id(data_source):
-    assert data_source.get_vehicle(999_999) is None
+    assert data_source.get_vehicle(999_999, customer_id=None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -192,7 +192,7 @@ def test_get_trip_returns_expected_trip(session, data_source):
     fleet = _make_fleet(session, "T1")
     session.expire_all()
 
-    fetched = data_source.get_trip(fleet["trip"].trip_id)
+    fetched = data_source.get_trip(fleet["trip"].trip_id, customer_id=None)
 
     assert fetched is not None
     assert fetched.driver_id == fleet["driver"].driver_id
@@ -201,21 +201,21 @@ def test_get_trip_returns_expected_trip(session, data_source):
 
 
 def test_get_trip_returns_none_for_unknown_id(data_source):
-    assert data_source.get_trip(999_999) is None
+    assert data_source.get_trip(999_999, customer_id=None) is None
 
 
 def test_get_trips_for_driver_returns_only_that_drivers_trips(session, data_source):
     fleet_a = _make_fleet(session, "TA")
     fleet_b = _make_fleet(session, "TB")
 
-    trips_a = data_source.get_trips_for_driver(fleet_a["driver"].driver_id)
+    trips_a = data_source.get_trips_for_driver(fleet_a["driver"].driver_id, customer_id=None)
 
     assert [t.trip_id for t in trips_a] == [fleet_a["trip"].trip_id]
     assert fleet_b["trip"].trip_id not in [t.trip_id for t in trips_a]
 
 
 def test_get_trips_for_driver_returns_empty_list_for_unknown_driver(data_source):
-    assert data_source.get_trips_for_driver(999_999) == []
+    assert data_source.get_trips_for_driver(999_999, customer_id=None) == []
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +227,7 @@ def test_get_driving_events_returns_events_ordered_by_event_time(session, data_s
     fleet = _make_fleet(session, "E1")
     session.expire_all()
 
-    events = data_source.get_driving_events(fleet["trip"].trip_id)
+    events = data_source.get_driving_events(fleet["trip"].trip_id, customer_id=None)
 
     assert [e.details for e in events] == ["first event", "second event"]
     assert [e.event_type for e in events] == [
@@ -253,11 +253,11 @@ def test_get_driving_events_returns_empty_list_for_trip_with_no_events(session, 
     session.add(empty_trip)
     session.commit()
 
-    assert data_source.get_driving_events(empty_trip.trip_id) == []
+    assert data_source.get_driving_events(empty_trip.trip_id, customer_id=None) == []
 
 
 def test_get_driving_events_returns_empty_list_for_unknown_trip(data_source):
-    assert data_source.get_driving_events(999_999) == []
+    assert data_source.get_driving_events(999_999, customer_id=None) == []
 
 
 # ---------------------------------------------------------------------------
@@ -359,18 +359,41 @@ def test_get_driving_events_with_customer_id_returns_empty_for_other_customer(
     assert len(events) == 2
 
 
-def test_id_keyed_methods_default_to_unscoped_when_customer_id_omitted(session, data_source):
-    """Regression guard for the `customer_id=None` default: confirms omitting
-    it reproduces the pre-scoping (Task 10 original) behavior -- any caller
-    can look up any id, same as before this fix round."""
+def test_id_keyed_methods_require_customer_id_to_be_passed_explicitly(data_source):
+    """Final-review Fix 8 regression test: `customer_id` used to default to
+    `None` (fail-open/unscoped) when omitted entirely -- a future caller
+    that forgot to pass it would silently get cross-tenant-capable data with
+    no error. It's now a required keyword-only argument (still nullable in
+    VALUE -- see `test_id_keyed_methods_explicit_customer_id_none_is_still_
+    unscoped` below), so omitting it must be a hard `TypeError` at the call
+    site, not a silent unscoped default."""
+    with pytest.raises(TypeError):
+        data_source.get_driver(1)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        data_source.get_vehicle(1)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        data_source.get_trip(1)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        data_source.get_trips_for_driver(1)  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        data_source.get_driving_events(1)  # type: ignore[call-arg]
+
+
+def test_id_keyed_methods_explicit_customer_id_none_is_still_unscoped(session, data_source):
+    """`customer_id` is required to be PASSED, but its value may still be
+    `None` for a deliberate unscoped lookup (e.g. a `support_agent` caller
+    with no single owning customer) -- this reproduces the pre-Fix-8
+    unscoped behavior, just via an explicit `customer_id=None` rather than
+    an omitted argument."""
     fleet_a = _make_fleet(session, "SCU-A")
 
-    # No customer_id at all -- equivalent to the original unscoped calls.
-    assert data_source.get_driver(fleet_a["driver"].driver_id) is not None
-    assert data_source.get_vehicle(fleet_a["vehicle"].vehicle_id) is not None
-    assert data_source.get_trip(fleet_a["trip"].trip_id) is not None
-    assert len(data_source.get_trips_for_driver(fleet_a["driver"].driver_id)) == 1
-    assert len(data_source.get_driving_events(fleet_a["trip"].trip_id)) == 2
+    assert data_source.get_driver(fleet_a["driver"].driver_id, customer_id=None) is not None
+    assert data_source.get_vehicle(fleet_a["vehicle"].vehicle_id, customer_id=None) is not None
+    assert data_source.get_trip(fleet_a["trip"].trip_id, customer_id=None) is not None
+    assert (
+        len(data_source.get_trips_for_driver(fleet_a["driver"].driver_id, customer_id=None)) == 1
+    )
+    assert len(data_source.get_driving_events(fleet_a["trip"].trip_id, customer_id=None)) == 2
 
 
 # ---------------------------------------------------------------------------

@@ -41,15 +41,16 @@ itself (not the object's concrete class) is what keeps callers decoupled --
 Tasks 11-16 must depend on `TelematicsDataSource`'s method signatures, never
 reach past it to `app.models`/`Session` themselves.
 
-Scope note (revised after Task 10 review): the ID-keyed methods
-(`get_driver`, `get_vehicle`, `get_trip`, `get_trips_for_driver`,
-`get_driving_events`) accept an optional `customer_id: int | None = None`.
-This is *not* RBAC/JWT re-entering the interface -- it's a plain `int`,
-the same primitive `app/repositories/chat.py` (Task 8) already threads
-through its own functions (e.g. `create_support_ticket(db,
-chat_session_id, customer_id, ...)`). The interface still doesn't know
-about `CurrentUser`, roles, or tokens; it only knows "optionally, filter to
-rows reachable from this customer_id."
+Scope note (revised after Task 10 review; signature tightened again by
+final-review Fix 8): the ID-keyed methods (`get_driver`, `get_vehicle`,
+`get_trip`, `get_trips_for_driver`, `get_driving_events`) accept a
+REQUIRED keyword-only `customer_id: int | None`. This is *not* RBAC/JWT
+re-entering the interface -- it's a plain `int`, the same primitive
+`app/repositories/chat.py` (Task 8) already threads through its own
+functions (e.g. `create_support_ticket(db, chat_session_id, customer_id,
+...)`). The interface still doesn't know about `CurrentUser`, roles, or
+tokens; it only knows "filter to rows reachable from this customer_id, or
+don't, if `None` is passed explicitly."
 
 Why this was added: Task 7's RBAC enforcement is one small, fixed set of
 REST handlers -- an easy audit choke point where a reviewer can read five
@@ -63,15 +64,26 @@ mechanism: Tasks 12-15 should pass the calling customer's id on every
 lookup derived from user input, and `SyntheticDataSource` enforces it with
 the same transitive-join logic `app/api/telematics.py`'s `_scoped_*`
 helpers already use (Driver/Vehicle direct `customer_id`; Trip and
-DrivingEvent scoped transitively through Driver). Passing `None` (the
-default) keeps today's unscoped behavior -- needed for contexts with no
+DrivingEvent scoped transitively through Driver). Passing `customer_id=None`
+explicitly keeps unscoped behavior available -- needed for contexts with no
 single owning customer (e.g. a support_agent's cross-fleet view, matching
 Task 7's own `support_agent`-is-unrestricted rule) -- and keeps a
 hypothetical `DatabricksDataSource` free to ignore the parameter if its own
 security model handles tenant isolation elsewhere (e.g. row-level security
-enforced by the warehouse itself). `get_knowledge_base_articles` has no
-`customer_id` parameter -- the knowledge base is global, shared across all
-customers, not tenant-scoped data.
+enforced by the warehouse itself).
+
+Final-review Fix 8: `customer_id: int | None = None` used to be a
+DEFAULTED, fail-open parameter -- every current caller happened to pass it
+correctly, but a future caller that forgot to would silently get unscoped,
+cross-tenant-capable data with no error, rather than being forced to make
+an explicit choice. Dropping the default (while keeping the type itself
+nullable, since a genuine unscoped lookup is still a legitimate, deliberate
+choice for e.g. a `support_agent` caller) makes every call site name its
+intent -- `customer_id=None` for "deliberately unscoped" reads identically
+different from simply forgetting the argument, which is now a `TypeError`
+at the call site instead of a silent cross-tenant leak. `get_knowledge_base_
+articles` has no `customer_id` parameter at all -- the knowledge base is
+global, shared across all customers, not tenant-scoped data.
 
 Fleet-wide listing methods (added for Task 16): `list_drivers`,
 `list_vehicles`, `list_devices`, and `list_trips_for_customer` answer "give
@@ -109,43 +121,49 @@ class TelematicsDataSource(Protocol):
     """Read-only access to telematics + knowledge-base data, independent of
     the underlying storage engine."""
 
-    def get_driver(self, driver_id: int, customer_id: int | None = None) -> Driver | None:
+    def get_driver(self, driver_id: int, *, customer_id: int | None) -> Driver | None:
         """Return the `Driver` with `driver_id`, or `None` if it doesn't
-        exist. If `customer_id` is given, also returns `None` when the
-        driver exists but doesn't belong to that customer (tenant-scoping,
-        recommended whenever `driver_id` came from user-supplied/LLM-resolved
-        input)."""
+        exist. `customer_id` is required (though its VALUE may be `None` for
+        a deliberate unscoped lookup, e.g. a `support_agent` caller) -- see
+        module docstring's final-review Fix 8 note. If a real `customer_id`
+        is given, also returns `None` when the driver exists but doesn't
+        belong to that customer (tenant-scoping, recommended whenever
+        `driver_id` came from user-supplied/LLM-resolved input)."""
         ...
 
-    def get_vehicle(self, vehicle_id: int, customer_id: int | None = None) -> Vehicle | None:
+    def get_vehicle(self, vehicle_id: int, *, customer_id: int | None) -> Vehicle | None:
         """Return the `Vehicle` with `vehicle_id`, or `None` if it doesn't
-        exist. If `customer_id` is given, also returns `None` when the
-        vehicle exists but doesn't belong to that customer."""
+        exist. `customer_id` is required (see `get_driver`'s docstring). If a
+        real `customer_id` is given, also returns `None` when the vehicle
+        exists but doesn't belong to that customer."""
         ...
 
-    def get_trip(self, trip_id: int, customer_id: int | None = None) -> Trip | None:
+    def get_trip(self, trip_id: int, *, customer_id: int | None) -> Trip | None:
         """Return the `Trip` with `trip_id`, or `None` if it doesn't exist.
-        If `customer_id` is given, also returns `None` when the trip exists
-        but its driver doesn't belong to that customer."""
+        `customer_id` is required (see `get_driver`'s docstring). If a real
+        `customer_id` is given, also returns `None` when the trip exists but
+        its driver doesn't belong to that customer."""
         ...
 
     def get_trips_for_driver(
-        self, driver_id: int, customer_id: int | None = None
+        self, driver_id: int, *, customer_id: int | None
     ) -> list[Trip]:
         """Return all `Trip`s belonging to `driver_id`, ordered oldest-first
         (by `trip_id`). Empty list if the driver has no trips (or doesn't
         exist) -- not an error, matching the other list-returning methods
-        here. If `customer_id` is given, also returns an empty list when
+        here. `customer_id` is required (see `get_driver`'s docstring). If a
+        real `customer_id` is given, also returns an empty list when
         `driver_id` doesn't belong to that customer."""
         ...
 
     def get_driving_events(
-        self, trip_id: int, customer_id: int | None = None
+        self, trip_id: int, *, customer_id: int | None
     ) -> list[DrivingEvent]:
         """Return all `DrivingEvent`s recorded for `trip_id`, ordered
         chronologically (by `event_time`). Empty list if the trip has no
-        events (or doesn't exist). If `customer_id` is given, also returns
-        an empty list when the trip's driver doesn't belong to that
+        events (or doesn't exist). `customer_id` is required (see
+        `get_driver`'s docstring). If a real `customer_id` is given, also
+        returns an empty list when the trip's driver doesn't belong to that
         customer."""
         ...
 
