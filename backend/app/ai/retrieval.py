@@ -68,6 +68,26 @@ class RetrievedContext:
     vehicle: Vehicle | None = None
     trip: Trip | None = None
     driving_events: list[DrivingEvent] = field(default_factory=list)
+    #: Cosine SIMILARITY (not distance -- higher is closer, matching the
+    #: axis `_cosine_similarity` already returns) of each `articles[i]` to
+    #: the query embedding, same order/length as `articles`. Added for
+    #: final-review Fix 4: `build_top_k_articles_query` has no relevance
+    #: cutoff and always returns `top_k` rows whenever the KB has that many,
+    #: however distant they actually are -- so `app.ai.chat_service
+    #: ._compute_confidence` previously had no way to tell "found 3 highly
+    #: relevant articles" apart from "found 3 completely irrelevant ones"
+    #: and scored confidence purely off article COUNT. This field threads
+    #: the real relevance signal through so confidence can be gated on it.
+    #: Populated by `retrieve_context` (computed in Python via the same
+    #: `_cosine_similarity` helper `rank_articles_by_similarity` already
+    #: uses -- mathematically equivalent to pgvector's `<=>` distance used
+    #: for ranking, just computed client-side against the already-fetched
+    #: `article.embedding` values rather than re-plumbed through the SQL
+    #: SELECT clause). Callers that build a `RetrievedContext` directly
+    #: (e.g. unit tests) that don't set this get the conservative default of
+    #: `[]`, which `_compute_confidence` treats as "relevance unknown -- no
+    #: credit for article count".
+    article_similarities: list[float] = field(default_factory=list)
 
 
 def build_top_k_articles_query(query_embedding: list[float], top_k: int) -> Select:
@@ -150,6 +170,10 @@ def retrieve_context(
 
     statement = build_top_k_articles_query(query_embedding, top_k)
     articles = list(db.execute(statement).scalars().all())
+    article_similarities = [
+        _cosine_similarity(article.embedding, query_embedding) if article.embedding else 0.0
+        for article in articles
+    ]
 
     driver = ds.get_driver(driver_id, customer_id=customer_id) if driver_id is not None else None
     vehicle = (
@@ -167,4 +191,5 @@ def retrieve_context(
         vehicle=vehicle,
         trip=trip,
         driving_events=driving_events,
+        article_similarities=article_similarities,
     )

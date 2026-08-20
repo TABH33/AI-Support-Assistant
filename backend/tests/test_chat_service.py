@@ -253,3 +253,69 @@ def test_answer_query_non_fallback_response_with_context_yields_confidence_above
         result = answer_query("q", rich_context)
 
     assert result.confidence > 0.1
+
+
+# ---------------------------------------------------------------------------
+# _compute_confidence: relevance gating (final-review Fix 4)
+#
+# `build_top_k_articles_query` has no distance/relevance cutoff -- it always
+# returns `top_k` articles regardless of how semantically distant they are
+# from the query. Before this fix, `_compute_confidence` scored confidence
+# purely off the COUNT of retrieved articles, so retrieval quality could
+# never actually trigger escalation. These tests prove the property that was
+# previously untested and is the actual bug: the SAME article count must
+# yield a LOWER confidence when those articles are all distant/low-similarity
+# than when they're genuinely close/relevant to the query.
+# ---------------------------------------------------------------------------
+
+
+def _context_with_articles(similarities: list[float]) -> RetrievedContext:
+    """Same article COUNT for every call site below -- only
+    `article_similarities` varies -- so any confidence difference between
+    two contexts built this way is attributable to relevance, not count."""
+    articles = [
+        _article(f"Article {i}", f"Content for article {i}") for i in range(len(similarities))
+    ]
+    return RetrievedContext(query="q", articles=articles, article_similarities=similarities)
+
+
+def test_close_relevant_articles_yield_higher_confidence_than_distant_ones_with_same_count():
+    close_context = _context_with_articles([0.97, 0.9, 0.85])
+    distant_context = _context_with_articles([0.05, 0.02, 0.01])
+    assert len(close_context.articles) == len(distant_context.articles)
+
+    with patch("app.ai.chat_service.chat_completion", return_value="A grounded answer."):
+        close_result = answer_query("q", close_context)
+    with patch("app.ai.chat_service.chat_completion", return_value="A grounded answer."):
+        distant_result = answer_query("q", distant_context)
+
+    assert close_result.confidence > distant_result.confidence
+
+
+def test_articles_all_below_relevance_floor_get_no_credit_for_being_present():
+    """Even with `DEFAULT_TOP_K` articles retrieved, if none of them clear
+    the relevance floor, `_compute_confidence` must treat it the same as
+    having found no articles at all for that axis (still distinguishable
+    from "found nothing whatsoever" only via the telematics axis, which this
+    context also lacks -- so this pins to the 0.1 floor)."""
+    distant_context = _context_with_articles([0.1, 0.05, 0.0])
+
+    with patch("app.ai.chat_service.chat_completion", return_value="An answer."):
+        result = answer_query("q", distant_context)
+
+    assert result.confidence <= 0.35  # no article-count bonus was awarded
+
+
+def test_confidence_scales_with_best_match_relevance_not_just_presence():
+    """A single very-close match should score higher than a single
+    borderline-relevant match, even though both contexts retrieved exactly
+    one article."""
+    very_close = _context_with_articles([0.99])
+    borderline = _context_with_articles([0.31])
+
+    with patch("app.ai.chat_service.chat_completion", return_value="An answer."):
+        very_close_result = answer_query("q", very_close)
+    with patch("app.ai.chat_service.chat_completion", return_value="An answer."):
+        borderline_result = answer_query("q", borderline)
+
+    assert very_close_result.confidence > borderline_result.confidence

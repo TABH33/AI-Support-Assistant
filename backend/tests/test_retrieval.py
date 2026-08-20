@@ -282,6 +282,29 @@ def test_retrieve_context_embeds_the_query_and_returns_articles_from_db_execute(
     db.execute.assert_called_once()
 
 
+def test_retrieve_context_populates_article_similarities_from_real_embeddings():
+    """Final-review Fix 4 regression test: `retrieve_context` must thread a
+    real cosine-similarity score per retrieved article through to
+    `RetrievedContext.article_similarities` (same order/length as
+    `articles`), computed from the articles' own `.embedding` values against
+    the query embedding -- not just return the bare article count, which is
+    all `_compute_confidence` previously had to work with."""
+    close_embedding = [1.0, 0.0, 0.0] + [0.0] * 765
+    far_embedding = [0.0, 1.0, 0.0] + [0.0] * 765
+    close_article = _article("Close match", close_embedding)
+    far_article = _article("Far match", far_embedding)
+    db = _mock_db_returning([close_article, far_article])
+
+    query_embedding = [1.0, 0.0, 0.0] + [0.0] * 765
+    with patch("app.ai.retrieval.embed_text", return_value=query_embedding):
+        result = retrieve_context("a question", db=db, data_source=Mock(spec=TelematicsDataSource))
+
+    assert len(result.article_similarities) == 2
+    # Identical vector -> cosine similarity 1.0; orthogonal vector -> ~0.0.
+    assert result.article_similarities[0] == pytest.approx(1.0)
+    assert result.article_similarities[1] == pytest.approx(0.0, abs=1e-9)
+
+
 def test_retrieve_context_passes_top_k_through_to_the_query():
     db = _mock_db_returning([])
 

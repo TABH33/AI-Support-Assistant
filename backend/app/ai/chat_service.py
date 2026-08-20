@@ -111,22 +111,40 @@ def build_prompt_messages(query: str, context: RetrievedContext) -> list[dict[st
     ]
 
 
+#: Minimum cosine SIMILARITY (see `RetrievedContext.article_similarities`)
+#: the BEST retrieved article must clear before "articles were retrieved"
+#: earns any confidence credit at all -- final-review Fix 4. POC-level
+#: heuristic, not a calibrated number: `build_top_k_articles_query` has no
+#: distance/relevance cutoff and always returns `top_k` rows whenever the KB
+#: has that many, however semantically distant they are from the query, so
+#: "N articles came back" on its own said nothing about relevance (against
+#: the seeded ~10-article KB, this previously kept confidence pinned near
+#: 0.80-0.95 almost regardless of query, since count alone was rewarded).
+#: Below this floor, retrieval is treated the same as having found nothing.
+_ARTICLE_RELEVANCE_FLOOR = 0.3
+
+
 def _compute_confidence(context: RetrievedContext, answer_text: str) -> float:
     """POC-level heuristic confidence score -- NOT a claim of true model
     calibration (Ollama's `/api/chat` doesn't expose logprobs/log-likelihoods
-    we could use for that). `RetrievedContext` also doesn't carry the raw
-    pgvector similarity scores past the ranking step (see
-    `app.ai.retrieval`), so this proxies "how much did retrieval actually
-    find" by how much context was resolved, on two axes:
+    we could use for that). Proxies "how much did retrieval actually find,
+    and how relevant was it" on two axes:
 
-    1. How many knowledge-base articles were retrieved, out of the
-       `DEFAULT_TOP_K` requested (0 articles -> no contribution; more
-       articles retrieved -> more corroborating context -> higher
-       confidence, capped once `DEFAULT_TOP_K` is reached).
+    1. Knowledge-base articles: gated on BOTH how many were retrieved (out
+       of `DEFAULT_TOP_K`, as before) AND how relevant the single BEST
+       (highest cosine-similarity) retrieved article actually was
+       (`context.article_similarities` -- final-review Fix 4). Below
+       `_ARTICLE_RELEVANCE_FLOOR`, the article-count bonus is withheld
+       entirely, even if `top_k` articles came back -- a pile of irrelevant
+       articles is not evidence the answer is grounded. From the floor up to
+       a similarity of 1.0, the bonus scales linearly, so "found 3 nearly-
+       identical-to-the-query articles" scores meaningfully higher than
+       "found 3 borderline-relevant articles", not just "found articles" vs
+       "found none".
     2. Whether any driver/vehicle/trip/driving-event data was resolved at
        all (a boolean bump, since telematics context is either present or
        not -- there's no partial-match notion for it the way there is for
-       article count).
+       article count/relevance).
 
     If NEITHER axis found anything (no articles AND no telematics rows),
     there was nothing to ground an answer in, so confidence is pinned to a
@@ -148,7 +166,17 @@ def _compute_confidence(context: RetrievedContext, answer_text: str) -> float:
         base_confidence = 0.1
     else:
         base_confidence = 0.35
-        base_confidence += 0.15 * min(len(context.articles), DEFAULT_TOP_K)
+        if has_articles:
+            best_similarity = max(context.article_similarities, default=0.0)
+            if best_similarity > _ARTICLE_RELEVANCE_FLOOR:
+                relevance_scale = min(
+                    (best_similarity - _ARTICLE_RELEVANCE_FLOOR)
+                    / (1.0 - _ARTICLE_RELEVANCE_FLOOR),
+                    1.0,
+                )
+                base_confidence += (
+                    0.15 * min(len(context.articles), DEFAULT_TOP_K) * relevance_scale
+                )
         if has_telematics:
             base_confidence += 0.15
         base_confidence = min(base_confidence, 0.95)
