@@ -432,6 +432,37 @@ describe('ChatWidget', () => {
       expect(JSON.parse(options.body as string)).toEqual({ feedback: true })
     })
 
+    it('shows the escalation acknowledgement when a thumbs-down PATCH response has escalated:true', async () => {
+      // Final-review Fix 7 regression test: the PATCH response
+      // (ChatMessageFeedbackResponse, carrying escalated/support_ticket_id)
+      // was previously awaited and discarded -- nothing told the user a
+      // support ticket had been created on their behalf. mockChatFetch's
+      // /feedback handler already returns `escalated: body.feedback ===
+      // false`, i.e. `true` for a thumbs-down click, matching the real
+      // backend's contract.
+      mockChatFetch()
+      renderWidget()
+
+      await openWidget()
+      await sendMessage('Why is my device offline?')
+      await waitFor(() => {
+        expect(screen.getByText('Your vehicle traveled 42.5 km on its last trip.')).toBeInTheDocument()
+      })
+
+      // Not shown yet -- this response was NOT auto-escalated (confidence
+      // 0.95, per mockChatFetch's non-escalated branch).
+      expect(screen.queryByTestId('chat-escalation-label')).not.toBeInTheDocument()
+
+      fireEvent.click(screen.getByRole('button', { name: /thumbs down/i }))
+
+      // The SAME visual acknowledgement the auto-escalation path uses now
+      // appears for the message the user just downvoted.
+      await waitFor(() => {
+        expect(screen.getByTestId('chat-escalation-label')).toBeInTheDocument()
+      })
+      expect(screen.getByTestId('chat-escalation-label')).toHaveTextContent('Escalated to human support')
+    })
+
     it('rolls back the optimistic thumbs-down state and shows an error when the PATCH fails', async () => {
       mockChatFetch()
       renderWidget()
