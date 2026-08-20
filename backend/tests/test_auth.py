@@ -142,8 +142,28 @@ def test_create_and_decode_access_token_round_trips_claims():
 
 
 def test_decode_access_token_rejects_tampered_signature():
+    """Regression test for a flaky earlier version of this test (final-review
+    Fix 3): tampering only the LAST character of the token's base64url
+    signature segment is unreliable. An HMAC-SHA256 signature is 32 raw
+    bytes, and base64url without padding leaves that final character
+    encoding only 2 significant bits (the other 4 are padding bits that
+    `b64decode` ignores) -- so roughly 1-in-4 to 1-in-8 single-character
+    mutations there produce byte-identical signature bytes, making the
+    "tampered" token verify successfully and this test spuriously fail.
+
+    Tampering a character in the MIDDLE of the signature segment instead
+    guarantees the mutation changes the decoded bytes deterministically:
+    every non-trailing base64 character fully determines 6 bits that belong
+    to complete output bytes, so substituting a different character always
+    changes at least one decoded byte.
+    """
     token = create_access_token(subject=1, role="customer")
-    tampered = token[:-1] + ("A" if token[-1] != "A" else "B")
+    header_b64, payload_b64, signature_b64 = token.split(".")
+    mid = len(signature_b64) // 2
+    original_char = signature_b64[mid]
+    replacement_char = "A" if original_char != "A" else "B"
+    tampered_signature = signature_b64[:mid] + replacement_char + signature_b64[mid + 1 :]
+    tampered = f"{header_b64}.{payload_b64}.{tampered_signature}"
     with pytest.raises(jwt.PyJWTError):
         decode_access_token(tampered)
 
