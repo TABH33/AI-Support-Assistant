@@ -221,9 +221,18 @@ export function ChatWidget() {
   }, [])
 
   const handleFeedback = useCallback(async (messageId: string, chatMessageId: number, value: boolean) => {
-    // Optimistic update -- reflect the click immediately.
+    // Capture the pre-click value so a failed PATCH can be rolled back to it
+    // -- otherwise a failure would leave the optimistic update in place,
+    // showing thumbs-up/down as "applied" even though the backend never
+    // recorded it (and, for thumbs-down, never created the escalation
+    // ticket).
+    let previousFeedback: boolean | undefined
     setMessages((prev) =>
-      prev.map((message) => (message.id === messageId ? { ...message, feedback: value } : message))
+      prev.map((message) => {
+        if (message.id !== messageId) return message
+        previousFeedback = message.feedback
+        return { ...message, feedback: value }
+      })
     )
     try {
       await apiPatch<ChatMessageFeedbackResponse>(`/chat/messages/${chatMessageId}/feedback`, {
@@ -231,6 +240,11 @@ export function ChatWidget() {
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to submit feedback.')
+      // Roll back the optimistic update -- the backend never actually
+      // recorded this feedback, so the UI must not keep showing it as set.
+      setMessages((prev) =>
+        prev.map((message) => (message.id === messageId ? { ...message, feedback: previousFeedback } : message))
+      )
     }
   }, [])
 

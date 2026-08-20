@@ -50,7 +50,7 @@ export function CesSurvey({ sessionId, onSubmit, onSkip }: CesSurveyProps) {
 
   return (
     <div
-      role="dialog"
+      role="group"
       aria-label="Rate this conversation"
       data-testid="ces-survey"
       className="flex flex-1 flex-col justify-between p-4"

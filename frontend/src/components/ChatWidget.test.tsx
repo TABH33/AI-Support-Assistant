@@ -431,6 +431,43 @@ describe('ChatWidget', () => {
       ) as [string, RequestInit]
       expect(JSON.parse(options.body as string)).toEqual({ feedback: true })
     })
+
+    it('rolls back the optimistic thumbs-down state and shows an error when the PATCH fails', async () => {
+      mockChatFetch()
+      renderWidget()
+
+      await openWidget()
+      await sendMessage('Why is my device offline?')
+      await waitFor(() => {
+        expect(screen.getByText('Your vehicle traveled 42.5 km on its last trip.')).toBeInTheDocument()
+      })
+
+      // The next fetch call (the feedback PATCH) fails; everything else
+      // (already resolved by this point) keeps using mockChatFetch's normal
+      // responses.
+      ;(fetch as unknown as Mock).mockImplementationOnce(async () => ({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: async () => ({}),
+      }))
+
+      const thumbsDownButton = screen.getByRole('button', { name: /thumbs down/i })
+      fireEvent.click(thumbsDownButton)
+
+      // Optimistic UI applies immediately...
+      expect(thumbsDownButton).toHaveAttribute('aria-pressed', 'true')
+
+      // ...then reverts once the PATCH rejects, and the failure is surfaced.
+      await waitFor(() => {
+        expect(thumbsDownButton).toHaveAttribute('aria-pressed', 'false')
+      })
+      expect(screen.getByRole('alert')).toBeInTheDocument()
+
+      // Thumbs-up must also read as un-set -- the rollback restores "no
+      // feedback yet," not some other stuck state.
+      expect(screen.getByRole('button', { name: /thumbs up/i })).toHaveAttribute('aria-pressed', 'false')
+    })
   })
 
   describe('Task 22: CES survey trigger', () => {
