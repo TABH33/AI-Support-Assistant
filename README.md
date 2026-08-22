@@ -42,8 +42,8 @@ Before using the chat features, you need to pull the required Ollama models.
 Once Ollama is running, pull the required models:
 
 ```bash
-# Pull the main language model (llama2)
-ollama pull llama2
+# Pull the main language model (llama3.1:8b)
+ollama pull llama3.1:8b
 
 # Pull the embedding model
 ollama pull nomic-embed-text
@@ -52,7 +52,7 @@ ollama pull nomic-embed-text
 If running Docker Compose, you can exec into the ollama container:
 
 ```bash
-docker exec telematics_ollama ollama pull llama2
+docker exec telematics_ollama ollama pull llama3.1:8b
 docker exec telematics_ollama ollama pull nomic-embed-text
 ```
 
@@ -65,7 +65,7 @@ The `.env` file controls all service configurations:
 - `POSTGRES_USER/PASSWORD/DB`: PostgreSQL credentials and database name
 - `DATABASE_URL`: Connection string for the backend to reach PostgreSQL
 - `OLLAMA_BASE_URL`: URL for the backend to communicate with Ollama
-- `OLLAMA_MODEL`: Main language model name (e.g., llama2)
+- `OLLAMA_MODEL`: Main language model name (e.g., llama3.1:8b)
 - `OLLAMA_EMBED_MODEL`: Embedding model name (e.g., nomic-embed-text)
 - `JWT_SECRET`: Secret key for JWT token signing (change in production)
 - `ENCRYPTION_KEY`: Base64-encoded symmetric key (>=32 raw bytes) for at-rest PII encryption (see "Security & Compliance" below; change in production)
