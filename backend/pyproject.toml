@@ -26,6 +26,9 @@ dev = [
     "pytest>=7.4.0",
 ]
 
+[tool.setuptools.packages.find]
+include = ["app*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
