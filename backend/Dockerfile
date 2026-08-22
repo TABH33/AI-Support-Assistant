@@ -11,6 +11,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy project files
 COPY pyproject.toml .
 COPY app/ ./app/
+COPY alembic.ini .
+COPY alembic/ ./alembic/
 
 # Install dependencies
 RUN pip install --no-cache-dir -e .
