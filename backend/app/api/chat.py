@@ -42,6 +42,7 @@ from sqlalchemy.orm import Query as SAQuery, Session
 
 from app.ai.chat_service import answer_query
 from app.ai.escalation import handle_answer
+from app.ai.reports import generate_end_of_day_report, generate_start_of_day_report
 from app.ai.retrieval import retrieve_context
 from app.auth.dependencies import CurrentUser, require_role
 from app.database import get_db
@@ -49,7 +50,7 @@ from app.models.chat import ChatMessage, ChatSession, Notification, SupportTicke
 from app.models.device import Device
 from app.models.enums import ChatMessageRole, PreferredNotificationMethod, Priority, TicketStatus
 from app.repositories.chat import create_chat_session, create_notification, create_support_ticket
-from app.security.audit import ACTION_CHAT_ANSWER, record_audit_event
+from app.security.audit import ACTION_CHAT_ANSWER, ACTION_REPORT_GENERATED, record_audit_event
 
 router = APIRouter(tags=["chat"])
 
@@ -172,6 +173,38 @@ def _create_new_session(
 
 
 # ---------------------------------------------------------------------------
+# Report-intent routing
+# ---------------------------------------------------------------------------
+
+# Task 16 built full start-of-day/end-of-day report generation, but nothing
+# ever called it from the chat pipeline -- a real user asking "give me the
+# daily report" through the widget always fell through to RAG, found no
+# matching knowledge-base article, and got the escalation fallback text.
+# Reports are deliberately NOT RAG (see app/ai/reports.py's module
+# docstring: "always delivered, not confidence-gated"), so this is a plain
+# keyword routing decision made before retrieve_context runs, not a change
+# to the RAG/escalation pipeline itself.
+_START_OF_DAY_KEYWORDS = ("start of day", "start-of-day", "morning report", "morning summary")
+_REPORT_KEYWORDS = ("report", "summary", "daily digest")
+
+
+def _detect_report_intent(query: str) -> str | None:
+    """Return ``"start_of_day"``, ``"end_of_day"``, or ``None``.
+
+    Deliberately simple substring matching, not NLP -- it only needs to
+    catch the common phrasings ("give me the daily report", "end of day
+    summary", "morning report") without false-positiving on ordinary
+    telematics questions, none of which use the word "report"/"summary".
+    """
+    lowered = query.lower()
+    if any(keyword in lowered for keyword in _START_OF_DAY_KEYWORDS):
+        return "start_of_day"
+    if any(keyword in lowered for keyword in _REPORT_KEYWORDS):
+        return "end_of_day"
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Route
 # ---------------------------------------------------------------------------
 
@@ -193,21 +226,39 @@ def post_chat(
     # docstring's security note).
     customer_id = chat_session.customer_id
 
-    retrieved_context = retrieve_context(
-        payload.query,
-        driver_id=payload.driver_id,
-        trip_id=payload.trip_id,
-        vehicle_id=payload.vehicle_id,
-        customer_id=customer_id,
-        db=db,
-    )
-    chat_answer = answer_query(payload.query, retrieved_context)
-    escalation_result = handle_answer(db, chat_session.chat_session_id, chat_answer)
+    report_intent = _detect_report_intent(payload.query)
+    if report_intent is not None:
+        # Reports bypass RAG/escalation entirely -- same "always delivered"
+        # design as the standalone /reports/* endpoints (app/ai/reports.py).
+        report_text = (
+            generate_start_of_day_report(customer_id, db=db)
+            if report_intent == "start_of_day"
+            else generate_end_of_day_report(customer_id, db=db)
+        )
+        answer_text = report_text
+        confidence = 1.0
+        escalated = False
+        audit_action = ACTION_REPORT_GENERATED
+    else:
+        retrieved_context = retrieve_context(
+            payload.query,
+            driver_id=payload.driver_id,
+            trip_id=payload.trip_id,
+            vehicle_id=payload.vehicle_id,
+            customer_id=customer_id,
+            db=db,
+        )
+        chat_answer = answer_query(payload.query, retrieved_context)
+        escalation_result = handle_answer(db, chat_session.chat_session_id, chat_answer)
+        answer_text = escalation_result.text
+        confidence = chat_answer.confidence
+        escalated = escalation_result.escalated
+        audit_action = ACTION_CHAT_ANSWER
 
     assistant_message = ChatMessage(
         chat_session_id=chat_session.chat_session_id,
         role=ChatMessageRole.ASSISTANT,
-        content=escalation_result.text,
+        content=answer_text,
     )
     db.add(
         ChatMessage(
@@ -244,10 +295,10 @@ def post_chat(
         db,
         actor_id=current_user.user_id,
         actor_role=current_user.role,
-        action=ACTION_CHAT_ANSWER,
+        action=audit_action,
         description=(
             f"chat_session_id={chat_session.chat_session_id} "
-            f"confidence={chat_answer.confidence:.3f} escalated={escalation_result.escalated}"
+            f"confidence={confidence:.3f} escalated={escalated}"
         ),
     )
 
@@ -260,9 +311,9 @@ def post_chat(
     return ChatResponse(
         session_id=session_id,
         message_id=message_id,
-        answer=escalation_result.text,
-        confidence=chat_answer.confidence,
-        escalated=escalation_result.escalated,
+        answer=answer_text,
+        confidence=confidence,
+        escalated=escalated,
     )
 
 

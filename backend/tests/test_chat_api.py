@@ -282,6 +282,46 @@ def test_new_session_created_on_first_call(client, db_session, fleet_a):
     assert messages[1].content == "Your trip covered 42.5 km."
 
 
+def test_report_intent_routes_to_report_generator_not_rag(client, db_session, fleet_a):
+    """A "give me the daily report" style question must bypass RAG/escalation
+    entirely and return the real report text -- reproduces and verifies the
+    fix for a live bug where the chat widget's report request always fell
+    through to the knowledge-base search, found nothing, and returned the
+    escalation fallback text instead of the report."""
+    with patch(
+        "app.api.chat.generate_end_of_day_report",
+        return_value="End-of-day report: 3 trips, 0 harsh braking events.",
+    ) as mock_report, patch("app.ai.chat_service.chat_completion") as mock_chat:
+        response = client.post(
+            "/chat",
+            json={
+                "query": "give me the daily report",
+                "device_id": fleet_a["device"].device_id,
+            },
+            headers=fleet_a["headers"],
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["answer"] == "End-of-day report: 3 trips, 0 harsh braking events."
+    assert body["escalated"] is False
+    assert body["confidence"] == 1.0
+    mock_report.assert_called_once()
+    # The report path must never touch the RAG/LLM chat completion -- if it
+    # did, this would silently regress back into the original bug whenever
+    # the mocked report generator happens to also return non-fallback text.
+    mock_chat.assert_not_called()
+
+    db_session.expire_all()
+    messages = (
+        db_session.query(ChatMessage)
+        .filter_by(chat_session_id=body["session_id"])
+        .order_by(ChatMessage.chat_message_id)
+        .all()
+    )
+    assert messages[1].content == "End-of-day report: 3 trips, 0 harsh braking events."
+
+
 def test_new_session_requires_device_id(client, fleet_a):
     with patch("app.ai.chat_service.chat_completion", return_value="some answer"):
         response = client.post(
