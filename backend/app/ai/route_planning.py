@@ -11,6 +11,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from sqlalchemy.orm import Session
+
+from app.datasources.base import TelematicsDataSource
+from app.datasources.synthetic import SyntheticDataSource
 from app.geo import haversine_distance_km
 from app.integrations.open_meteo import WeatherServiceError, get_forecast
 
@@ -132,4 +136,43 @@ def evaluate_weather_warnings(points: list[SamplePoint]) -> list[Warning]:
                     ),
                 )
             )
+    return warnings
+
+
+def evaluate_risk_zone_warnings(
+    points: list[SamplePoint], *, db: Session, data_source: TelematicsDataSource | None = None
+) -> list[Warning]:
+    """For each sample point, look up historical DrivingEvents within
+    RISK_ZONE_RADIUS_KM and flag the point as a risk zone when the event
+    count reaches RISK_ZONE_EVENT_THRESHOLD. data_source defaults to
+    SyntheticDataSource(db), matching every other app/ai module's pattern
+    (see e.g. app/ai/retrieval.py's retrieve_context)."""
+    ds = data_source if data_source is not None else SyntheticDataSource(db)
+
+    warnings: list[Warning] = []
+    for point in points:
+        events = ds.get_driving_events_near(point.latitude, point.longitude, RISK_ZONE_RADIUS_KM)
+        if len(events) < RISK_ZONE_EVENT_THRESHOLD:
+            continue
+
+        type_counts: dict[str, int] = {}
+        for event in events:
+            key = event.event_type.value
+            type_counts[key] = type_counts.get(key, 0) + 1
+        dominant_type, dominant_count = max(type_counts.items(), key=lambda item: item[1])
+
+        warnings.append(
+            Warning(
+                latitude=point.latitude,
+                longitude=point.longitude,
+                distance_from_origin_km=point.distance_from_origin_km,
+                type="risk_zone",
+                severity="high" if len(events) >= RISK_ZONE_EVENT_THRESHOLD * 2 else "moderate",
+                description=(
+                    f"{len(events)} driving events recorded within "
+                    f"{RISK_ZONE_RADIUS_KM:.0f}km of this point "
+                    f"({dominant_count} {dominant_type.replace('_', ' ')})."
+                ),
+            )
+        )
     return warnings
