@@ -640,5 +640,75 @@ describe('ChatWidget', () => {
       })
       expect(screen.queryByTestId('chat-route-map-panel')).not.toBeInTheDocument()
     })
+
+    it('hides the route map panel once a later, ordinary response arrives (does not stay stuck open)', async () => {
+      let chatCallCount = 0
+      ;(fetch as unknown as Mock).mockImplementation(async (url: string) => {
+        if (url.includes('/devices')) {
+          return { ok: true, status: 200, json: async () => customerADevices }
+        }
+        if (url.includes('/chat')) {
+          chatCallCount += 1
+          if (chatCallCount === 1) {
+            return {
+              ok: true,
+              status: 200,
+              json: async () => ({
+                session_id: 42,
+                message_id: 555,
+                answer: 'This route is 23.4km and takes about 38 minutes, with a risk zone near the midpoint.',
+                confidence: 1.0,
+                escalated: false,
+                route_plan: {
+                  distance_km: 23.4,
+                  duration_min: 38.2,
+                  geometry: {
+                    type: 'LineString',
+                    coordinates: [
+                      [151.2093, -33.8688],
+                      [151.0011, -33.815],
+                    ],
+                  },
+                  warnings: [],
+                  unavailable: false,
+                },
+              }),
+            }
+          }
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              session_id: 42,
+              message_id: 556,
+              answer: 'Your vehicle traveled 42.5 km on its last trip.',
+              confidence: 0.95,
+              escalated: false,
+            }),
+          }
+        }
+        throw new Error(`Unexpected fetch to ${url}`)
+      })
+      renderWidget()
+
+      await openWidget()
+      await sendMessage('plan a trip from Sydney CBD to Parramatta')
+      await waitFor(() => {
+        expect(screen.getByTestId('chat-route-map-panel')).toBeInTheDocument()
+      })
+
+      // Follow up with an ordinary question -- the response has no
+      // `route_plan`, so the map panel must disappear along with it (not
+      // stay stuck open just because SOME earlier message had a route_plan).
+      await sendMessage('How is my fleet doing?')
+      await waitFor(() => {
+        expect(screen.getByText('Your vehicle traveled 42.5 km on its last trip.')).toBeInTheDocument()
+      })
+      expect(screen.queryByTestId('chat-route-map-panel')).not.toBeInTheDocument()
+
+      const dialog = screen.getByRole('dialog', { name: /ai chat assistant/i })
+      expect(dialog.className).toContain('w-80')
+      expect(dialog.className).not.toContain('w-[44rem]')
+    })
   })
 })

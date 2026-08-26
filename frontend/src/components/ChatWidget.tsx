@@ -343,7 +343,14 @@ export function ChatWidget() {
     user,
   ])
 
-  const latestRoutePlanMessage = [...messages].reverse().find((message) => message.routePlan)
+  // Tied to the CURRENT last message only -- not "the most recent message
+  // that ever had a route_plan" -- so a route-plan turn followed by an
+  // ordinary follow-up question collapses the map panel/widened dialog
+  // back down, instead of leaving it stuck open for the rest of the
+  // session (see fix report in task-16-report.md for the bug this
+  // replaced).
+  const lastMessage = messages[messages.length - 1]
+  const activeRoutePlan = lastMessage?.routePlan
 
   return (
     <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end">
@@ -352,7 +359,7 @@ export function ChatWidget() {
           role="dialog"
           aria-label="AI chat assistant"
           className={`mb-3 flex h-[32rem] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-800 ${
-            latestRoutePlanMessage ? 'w-[44rem]' : 'w-80'
+            activeRoutePlan ? 'w-[44rem]' : 'w-80'
           }`}
         >
           <div className="flex h-full w-80 flex-shrink-0 flex-col">
@@ -489,12 +496,12 @@ export function ChatWidget() {
           )}
           </div>
 
-          {latestRoutePlanMessage?.routePlan && (
+          {activeRoutePlan && (
             <div
               data-testid="chat-route-map-panel"
               className="flex-1 border-l border-gray-200 p-2 dark:border-gray-700"
             >
-              <RouteMap routePlan={latestRoutePlanMessage.routePlan} />
+              <RouteMap routePlan={activeRoutePlan} />
             </div>
           )}
         </div>
