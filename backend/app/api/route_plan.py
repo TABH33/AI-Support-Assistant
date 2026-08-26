@@ -50,6 +50,15 @@ class RoutePlanResponse(BaseModel):
     geometry: dict | None
     warnings: list[WarningOut]
     unavailable: bool
+    #: Final-review Fix 5. When `unavailable` is True these say WHY, so a
+    #: client can distinguish "that place name doesn't exist" (retrying is
+    #: pointless -- fix the spelling) from "the routing service is down"
+    #: (retrying shortly is exactly the right advice). Both are None on a
+    #: successful plan. `unavailable_reason` is a stable machine-readable
+    #: code (see route_planning.UNAVAILABLE_REASON_*);
+    #: `unavailable_message` is the display text.
+    unavailable_reason: str | None = None
+    unavailable_message: str | None = None
 
 
 def _to_origin_input(value: str | CoordinatesIn) -> str | Coordinates:
@@ -78,6 +87,8 @@ def route_plan_result_to_response(result: RoutePlanResult) -> RoutePlanResponse:
         geometry=result.geometry,
         warnings=[_to_warning_out(w) for w in result.warnings],
         unavailable=result.unavailable,
+        unavailable_reason=result.unavailable_reason,
+        unavailable_message=result.unavailable_message,
     )
 
 
@@ -100,7 +111,7 @@ def post_route_plan(
         action=ACTION_ROUTE_PLAN_GENERATED,
         description=(
             f"origin={payload.origin!r} destination={payload.destination!r} "
-            f"unavailable={result.unavailable}"
+            f"unavailable={result.unavailable} reason={result.unavailable_reason}"
         ),
     )
     db.commit()

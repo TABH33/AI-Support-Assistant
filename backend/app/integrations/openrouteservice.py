@@ -56,9 +56,34 @@ class RouteResult:
     duration_min: float
 
 
+_MISSING_API_KEY_MESSAGE = "ORS_API_KEY is not configured"
+
+
+def _require_api_key() -> str:
+    """Honor app.config.Settings.ors_api_key's stated contract: the field
+    defaults to "" (see its comment in app/config.py) and "A caller that
+    actually needs it (openrouteservice.py) is responsible for treating an
+    empty value as 'not configured'."
+
+    Without this guard an unset key produced an empty Authorization header,
+    ORS answered 403, and the resulting RouteServiceRequestError was
+    indistinguishable in the logs from a genuine ORS outage. Raising
+    RouteServiceRequestError keeps the graceful-degradation contract intact
+    (build_route_plan already catches RouteServiceError and returns
+    unavailable=True) while emitting a diagnosable log line and skipping a
+    pointless HTTP round-trip."""
+    key = settings.ors_api_key
+    if not key:
+        logger.error(_MISSING_API_KEY_MESSAGE)
+        raise RouteServiceRequestError(_MISSING_API_KEY_MESSAGE)
+    return key
+
+
 def geocode(place_name: str, *, timeout: float = _DEFAULT_TIMEOUT_SECONDS) -> Coordinates:
     """Resolve a free-text place name to coordinates via ORS's Pelias-based
-    geocoding endpoint. Raises GeocodingError if no match is found."""
+    geocoding endpoint. Raises GeocodingError if no match is found, or
+    RouteServiceRequestError if ORS_API_KEY is not configured."""
+    _require_api_key()
     params = {"text": place_name, "size": 1}
     headers = {"Authorization": settings.ors_api_key}
 
@@ -106,7 +131,9 @@ def get_directions(
     timeout: float = _DEFAULT_TIMEOUT_SECONDS,
 ) -> RouteResult:
     """Fetch a driving route from origin to destination (optionally via
-    waypoints, in order) from OpenRouteService's Directions API."""
+    waypoints, in order) from OpenRouteService's Directions API. Raises
+    RouteServiceRequestError if ORS_API_KEY is not configured."""
+    _require_api_key()
     points = [origin, *(waypoints or []), destination]
     coordinates = [[point.longitude, point.latitude] for point in points]
 

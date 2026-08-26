@@ -5,11 +5,15 @@ from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.ai.route_planning import (
+    GEOCODING_FAILED_TEXT,
     ROUTE_DATA_UNAVAILABLE_TEXT,
+    UNAVAILABLE_REASON_GEOCODING,
+    UNAVAILABLE_REASON_SERVICE,
     RoutePlanResult,
     Warning,
     build_route_plan,
@@ -22,6 +26,7 @@ from app.integrations.openrouteservice import (
     GeocodingError,
     RouteResult,
     RouteServiceRequestError,
+    RouteServiceResponseError,
 )
 from app.models import Base
 
@@ -112,6 +117,117 @@ def test_build_route_plan_returns_unavailable_on_directions_failure(session):
         assert result.unavailable is True
 
 
+# ---------------------------------------------------------------------------
+# Final-review Fix 5: an unresolvable place name is not a service outage.
+# ---------------------------------------------------------------------------
+
+
+def test_geocoding_failure_reports_a_place_specific_reason_and_message(session):
+    with patch("app.ai.route_planning.geocode") as mock_geocode:
+        mock_geocode.side_effect = GeocodingError("no match")
+
+        result = build_route_plan("Parramattaa", "Sydney CBD", db=session)
+
+    assert result.unavailable is True
+    assert result.unavailable_reason == UNAVAILABLE_REASON_GEOCODING
+    # Names the exact place that failed, so the user can fix the typo.
+    assert "Parramattaa" in result.unavailable_message
+    # ...and is NOT the "try again shortly" advice, which cannot help here.
+    assert result.unavailable_message != ROUTE_DATA_UNAVAILABLE_TEXT
+
+
+def test_geocoding_failure_names_the_destination_when_the_origin_resolved(session):
+    with patch("app.ai.route_planning.geocode") as mock_geocode:
+        mock_geocode.side_effect = [_ORIGIN, GeocodingError("no match")]
+
+        result = build_route_plan("Sydney CBD", "Parramattaa", db=session)
+
+    assert result.unavailable_reason == UNAVAILABLE_REASON_GEOCODING
+    assert "Parramattaa" in result.unavailable_message
+    assert "Sydney CBD" not in result.unavailable_message
+
+
+@pytest.mark.parametrize(
+    "error",
+    [RouteServiceRequestError("ORS is down"), RouteServiceResponseError("garbage body")],
+)
+def test_service_failure_reports_the_generic_unavailable_reason(session, error):
+    with patch("app.ai.route_planning.get_directions") as mock_directions:
+        mock_directions.side_effect = error
+
+        result = build_route_plan(_ORIGIN, _DESTINATION, db=session)
+
+    assert result.unavailable is True
+    assert result.unavailable_reason == UNAVAILABLE_REASON_SERVICE
+    assert result.unavailable_message == ROUTE_DATA_UNAVAILABLE_TEXT
+
+
+def test_successful_plan_carries_no_unavailable_reason_or_message(session):
+    with (
+        patch("app.ai.route_planning.get_directions") as mock_directions,
+        patch("app.ai.route_planning.get_forecast") as mock_forecast,
+    ):
+        mock_directions.return_value = RouteResult(
+            geometry=_GEOMETRY, distance_km=23.4, duration_min=38.2
+        )
+        mock_forecast.return_value = ForecastResult(
+            precipitation_probability=10.0, wind_speed_kmh=10.0, visibility_m=20000.0
+        )
+
+        result = build_route_plan(_ORIGIN, _DESTINATION, db=session)
+
+    assert result.unavailable is False
+    assert result.unavailable_reason is None
+    assert result.unavailable_message is None
+
+
+# ---------------------------------------------------------------------------
+# Final-review Fix 6a: a DB failure during warning evaluation must degrade,
+# not propagate as a 500.
+# ---------------------------------------------------------------------------
+
+
+def test_db_failure_during_risk_zone_evaluation_degrades_instead_of_raising(session):
+    with (
+        patch("app.ai.route_planning.get_directions") as mock_directions,
+        patch("app.ai.route_planning.get_forecast") as mock_forecast,
+        patch("app.ai.route_planning.evaluate_risk_zone_warnings") as mock_risk,
+    ):
+        mock_directions.return_value = RouteResult(
+            geometry=_GEOMETRY, distance_km=23.4, duration_min=38.2
+        )
+        mock_forecast.return_value = ForecastResult(
+            precipitation_probability=10.0, wind_speed_kmh=10.0, visibility_m=20000.0
+        )
+        mock_risk.side_effect = OperationalError("SELECT 1", {}, Exception("connection lost"))
+
+        # Must not raise -- this used to propagate out of build_route_plan
+        # and become a 500 from POST /route-plan and POST /chat.
+        result = build_route_plan(_ORIGIN, _DESTINATION, db=session)
+
+    assert result.unavailable is True
+    assert result.unavailable_reason == UNAVAILABLE_REASON_SERVICE
+    assert result.unavailable_message == ROUTE_DATA_UNAVAILABLE_TEXT
+    assert result.warnings == []
+
+
+def test_non_database_error_during_warning_evaluation_still_propagates(session):
+    """The SQLAlchemyError guard is deliberately narrow: a genuine bug in
+    this module's own logic must still surface loudly rather than being
+    silently reported to the user as "route data unavailable"."""
+    with (
+        patch("app.ai.route_planning.get_directions") as mock_directions,
+        patch("app.ai.route_planning.evaluate_weather_warnings") as mock_weather,
+    ):
+        mock_directions.return_value = RouteResult(
+            geometry=_GEOMETRY, distance_km=23.4, duration_min=38.2
+        )
+        mock_weather.side_effect = TypeError("programming error")
+
+        with pytest.raises(TypeError):
+            build_route_plan(_ORIGIN, _DESTINATION, db=session)
+
+
 def test_build_route_summary_prompt_includes_distance_duration_and_warnings():
     route_plan = RoutePlanResult(
         distance_km=23.4,
@@ -160,3 +276,8 @@ def test_summarize_route_plan_calls_llm_with_built_prompt():
 def test_route_data_unavailable_text_is_a_nonempty_constant():
     assert isinstance(ROUTE_DATA_UNAVAILABLE_TEXT, str)
     assert len(ROUTE_DATA_UNAVAILABLE_TEXT) > 0
+
+
+def test_geocoding_failed_text_is_a_distinct_place_templated_constant():
+    assert GEOCODING_FAILED_TEXT != ROUTE_DATA_UNAVAILABLE_TEXT
+    assert "Nowhereville" in GEOCODING_FAILED_TEXT.format(place="Nowhereville")

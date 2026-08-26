@@ -9,8 +9,10 @@ See docs/superpowers/specs/2026-08-26-route-planning-warnings-design.md.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.ai.llm import chat_completion
@@ -20,10 +22,13 @@ from app.geo import haversine_distance_km
 from app.integrations.open_meteo import WeatherServiceError, get_forecast
 from app.integrations.openrouteservice import (
     Coordinates,
+    GeocodingError,
     RouteServiceError,
     geocode,
     get_directions,
 )
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SAMPLE_POINT_COUNT = 8
 
@@ -67,8 +72,33 @@ def sample_route_points(
     return points
 
 
-RISK_ZONE_RADIUS_KM = 1.0
-RISK_ZONE_EVENT_THRESHOLD = 3
+# Risk-zone tuning (final-review Fix 3). The original 1.0km / 3-event pair
+# was calibrated against no data: the real seed set (200 DrivingEvents
+# spread over the 3 short DEMO_CORRIDORS, app/seed/generator.py) puts 3-27
+# events within 1km of EVERY sampled point on EVERY demo corridor, so all 8
+# sample points flagged on all 3 routes. A "risk zone" covering 100% of
+# every route carries no information at all, defeating the design's
+# "deterministic, selective signal" goal.
+#
+# These values were chosen by probing the real generated seed data
+# (generate_seed_data(), fixed DEFAULT_SEED=1337) at 8 evenly-spaced points
+# along each demo corridor. At 0.5km / 10 events the flagged-point counts
+# are: Sydney CBD->Parramatta 1/8, Sydney CBD->Sydney Airport 2/8, Sydney
+# CBD->Bondi Beach 3/8. The Parramatta corridor is ~19km (vs ~8km and ~6km
+# for the other two) so its events are genuinely sparser; no (radius,
+# threshold) pair in the whole 0.25-1.0km x 3-30 event search space reaches
+# 2/8 there without pushing the other two corridors to 5/8 or more, so 1/8
+# is the tightest achievable balance -- selective on every corridor, and
+# never zero.
+RISK_ZONE_RADIUS_KM = 0.5
+RISK_ZONE_EVENT_THRESHOLD = 10
+# Severity split, previously the inline expression `THRESHOLD * 2`. With
+# THRESHOLD raised to 10 that formula would require 20 events within 500m --
+# more than the densest point on any demo corridor (14), making "high"
+# severity unreachable dead code. 14 is the observed top of the real
+# distribution, so exactly the worst point on the worst corridor reads as
+# high and the rest read as moderate.
+RISK_ZONE_HIGH_SEVERITY_THRESHOLD = 14
 WEATHER_PRECIPITATION_THRESHOLD = 60.0
 WEATHER_WIND_THRESHOLD_KMH = 40.0
 WEATHER_VISIBILITY_THRESHOLD_M = 1000.0
@@ -151,9 +181,15 @@ def evaluate_risk_zone_warnings(
 ) -> list[Warning]:
     """For each sample point, look up historical DrivingEvents within
     RISK_ZONE_RADIUS_KM and flag the point as a risk zone when the event
-    count reaches RISK_ZONE_EVENT_THRESHOLD. data_source defaults to
+    count reaches RISK_ZONE_EVENT_THRESHOLD, escalating to "high" severity
+    at RISK_ZONE_HIGH_SEVERITY_THRESHOLD. data_source defaults to
     SyntheticDataSource(db), matching every other app/ai module's pattern
-    (see e.g. app/ai/retrieval.py's retrieve_context)."""
+    (see e.g. app/ai/retrieval.py's retrieve_context).
+
+    Raises whatever the data source raises -- notably SQLAlchemyError on a
+    DB failure. build_route_plan is responsible for catching that and
+    degrading to unavailable=True (final-review Fix 6a); a direct caller
+    must handle it itself."""
     ds = data_source if data_source is not None else SyntheticDataSource(db)
 
     warnings: list[Warning] = []
@@ -174,10 +210,17 @@ def evaluate_risk_zone_warnings(
                 longitude=point.longitude,
                 distance_from_origin_km=point.distance_from_origin_km,
                 type="risk_zone",
-                severity="high" if len(events) >= RISK_ZONE_EVENT_THRESHOLD * 2 else "moderate",
+                severity=(
+                    "high"
+                    if len(events) >= RISK_ZONE_HIGH_SEVERITY_THRESHOLD
+                    else "moderate"
+                ),
                 description=(
+                    # Rendered in metres, not `{RISK_ZONE_RADIUS_KM:.0f}km`:
+                    # that format produced the literal text "0km" once the
+                    # radius dropped below 0.5 (final-review Fix 3).
                     f"{len(events)} driving events recorded within "
-                    f"{RISK_ZONE_RADIUS_KM:.0f}km of this point "
+                    f"{RISK_ZONE_RADIUS_KM * 1000:.0f}m of this point "
                     f"({dominant_count} {dominant_type.replace('_', ' ')})."
                 ),
             )
@@ -188,6 +231,20 @@ def evaluate_risk_zone_warnings(
 ROUTE_DATA_UNAVAILABLE_TEXT = (
     "I can't retrieve route data right now -- please try again shortly."
 )
+#: Final-review Fix 5: an unresolvable place name is NOT a service outage.
+#: Telling a user who typed "Parramattaa" to "try again shortly" is useless
+#: advice -- retrying cannot fix a misspelling. `{place}` is filled with the
+#: exact string that failed to geocode.
+GEOCODING_FAILED_TEXT = (
+    "I couldn't find a location matching '{place}' -- please check the "
+    "spelling or try a more specific name."
+)
+
+#: Machine-readable values for RoutePlanResult.unavailable_reason. Callers
+#: that only need something to show a human should use
+#: `unavailable_message` instead.
+UNAVAILABLE_REASON_SERVICE = "service_unavailable"
+UNAVAILABLE_REASON_GEOCODING = "geocoding_failed"
 
 
 @dataclass
@@ -197,6 +254,27 @@ class RoutePlanResult:
     geometry: dict | None
     warnings: list[Warning] = field(default_factory=list)
     unavailable: bool = False
+    #: Which failure mode produced `unavailable=True` -- one of the
+    #: UNAVAILABLE_REASON_* constants above, or None when the plan succeeded.
+    #: Separate from `unavailable_message` so the HTTP response can carry a
+    #: stable machine-readable code without clients parsing prose.
+    unavailable_reason: str | None = None
+    #: The ready-to-display text for this failure mode. None when the plan
+    #: succeeded. Lives here rather than being reconstructed by each caller
+    #: because the geocoding message embeds the specific place that failed,
+    #: which only build_route_plan knows.
+    unavailable_message: str | None = None
+
+
+def _unavailable(reason: str, message: str) -> RoutePlanResult:
+    return RoutePlanResult(
+        distance_km=None,
+        duration_min=None,
+        geometry=None,
+        unavailable=True,
+        unavailable_reason=reason,
+        unavailable_message=message,
+    )
 
 
 def build_route_plan(
@@ -209,24 +287,69 @@ def build_route_plan(
 ) -> RoutePlanResult:
     """Top-level entry point: resolves origin/destination/waypoints
     (geocoding any plain string), fetches the route, samples points along
-    it, evaluates both warning types, and returns one RoutePlanResult. On
-    any RouteServiceError (geocoding or directions failure), returns
-    unavailable=True instead of raising -- callers (POST /route-plan, the
-    chat route-plan intent) must never crash on a downstream API outage."""
+    it, evaluates both warning types, and returns one RoutePlanResult.
+
+    Never raises on a downstream failure -- callers (POST /route-plan, the
+    chat route-plan intent) must never 5xx because an external API or the
+    database misbehaved. Three failure modes all degrade to
+    unavailable=True, distinguished by `unavailable_reason`:
+
+      * GeocodingError -> UNAVAILABLE_REASON_GEOCODING. Caught BEFORE the
+        RouteServiceError parent it inherits from (final-review Fix 5), so
+        an unresolvable place name gets a "check the spelling" message
+        naming that place rather than the generic "try again shortly",
+        which is actively misleading advice for a typo.
+      * Any other RouteServiceError -> UNAVAILABLE_REASON_SERVICE.
+      * SQLAlchemyError from the warning evaluation below ->
+        UNAVAILABLE_REASON_SERVICE (final-review Fix 6a).
+    """
+    resolved: list[Coordinates] = []
     try:
-        origin_coords = geocode(origin) if isinstance(origin, str) else origin
-        destination_coords = geocode(destination) if isinstance(destination, str) else destination
-        waypoint_coords = (
-            [geocode(w) if isinstance(w, str) else w for w in waypoints] if waypoints else None
-        )
+        for place in [origin, destination, *(waypoints or [])]:
+            if not isinstance(place, str):
+                resolved.append(place)
+                continue
+            try:
+                resolved.append(geocode(place))
+            except GeocodingError:
+                # More specific than the RouteServiceError handler below,
+                # and handled here (rather than as a second `except` clause)
+                # so the failing place name is still in scope to name it.
+                return _unavailable(
+                    UNAVAILABLE_REASON_GEOCODING, GEOCODING_FAILED_TEXT.format(place=place)
+                )
+
+        origin_coords, destination_coords = resolved[0], resolved[1]
+        waypoint_coords = resolved[2:] or None
         route = get_directions(origin_coords, destination_coords, waypoint_coords)
     except RouteServiceError:
-        return RoutePlanResult(distance_km=None, duration_min=None, geometry=None, unavailable=True)
+        return _unavailable(UNAVAILABLE_REASON_SERVICE, ROUTE_DATA_UNAVAILABLE_TEXT)
 
     points = sample_route_points(route.geometry)
-    warnings = evaluate_weather_warnings(points) + evaluate_risk_zone_warnings(
-        points, db=db, data_source=data_source
-    )
+    try:
+        # evaluate_risk_zone_warnings issues real DB queries via
+        # SyntheticDataSource. Final-review Fix 6a: that call used to sit
+        # outside every try block, so a DB failure here propagated as an
+        # unhandled exception through POST /route-plan and POST /chat and
+        # became a 500 -- violating this feature's "never 5xx on a
+        # downstream failure" contract for exactly the same reason the ORS
+        # and Open-Meteo calls are already guarded.
+        #
+        # SQLAlchemyError is the right width: it is the common base for
+        # every DB-layer failure (OperationalError for a dropped
+        # connection, DBAPIError, InvalidRequestError for a broken
+        # session), so it covers the realistic outage modes, while staying
+        # narrow enough that a genuine bug in this module's own logic (a
+        # TypeError, a KeyError) still surfaces loudly as a 500 instead of
+        # being silently reported to the user as "route data unavailable".
+        # evaluate_weather_warnings is inside the same block only for
+        # symmetry -- it already swallows WeatherServiceError per point.
+        warnings = evaluate_weather_warnings(points) + evaluate_risk_zone_warnings(
+            points, db=db, data_source=data_source
+        )
+    except SQLAlchemyError:
+        logger.exception("Route-plan warning evaluation failed on a database error")
+        return _unavailable(UNAVAILABLE_REASON_SERVICE, ROUTE_DATA_UNAVAILABLE_TEXT)
 
     return RoutePlanResult(
         distance_km=route.distance_km,

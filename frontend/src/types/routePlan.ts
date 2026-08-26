@@ -24,4 +24,19 @@ export interface RoutePlanResult {
   geometry: RouteGeometry | null
   warnings: RouteWarning[]
   unavailable: boolean
+  /**
+   * Populated only when `unavailable` is true (final-review Fix 5).
+   * `unavailable_reason` is a stable machine-readable code --
+   * `'geocoding_failed'` (the place name could not be resolved; retrying
+   * will not help, the user must fix the spelling) or
+   * `'service_unavailable'` (a downstream outage; retrying shortly is the
+   * right advice). `unavailable_message` is the matching display text.
+   *
+   * Optional here because the chat path already renders this text through
+   * `ChatResponse.answer`, so no component reads these yet -- they are
+   * mirrored to keep this file's "keep in sync with the backend schema"
+   * contract honest.
+   */
+  unavailable_reason?: 'geocoding_failed' | 'service_unavailable' | null
+  unavailable_message?: string | null
 }

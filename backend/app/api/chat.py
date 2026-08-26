@@ -191,14 +191,49 @@ def _create_new_session(
 # Route-plan intent routing
 # ---------------------------------------------------------------------------
 
+# Final-review Fix 4. Two problems with the original patterns:
+#
+#  1. The place-name groups were `.+?` anchored only at `[.?!]|$`, with no
+#     place-name boundary, so trailing sentence text was swallowed into the
+#     destination: "plan a trip from Sydney CBD to Parramatta tomorrow
+#     morning" geocoded the literal string "Parramatta tomorrow morning",
+#     which ORS cannot resolve. The groups are now restricted to
+#     place-name characters and terminated by a lookahead at the first
+#     common trailing word or sentence punctuation.
+#
+#  2. The bare verb `drive` in the from-to keyword alternation matched any
+#     sentence containing "drive ... from ... to ...", so ordinary
+#     telematics questions ("How long does it take to drive from home to
+#     work?", "why did my driver drive from the depot to the client site so
+#     slowly") were hijacked away from RAG into route planning. `drive` is
+#     removed from the alternation: "plan a trip", "route", and "directions"
+#     are explicit route-planning requests, whereas "drive" is just the verb
+#     this whole domain is about and appears in a large share of ordinary
+#     questions. The cost is that a bare "drive from A to B" no longer
+#     route-plans -- an acceptable trade for not stealing RAG questions,
+#     since "drive to B" is still caught by the to-only pattern below.
+#: A comma is deliberately NOT in this class: it is a clause separator far
+#: more often than part of a place name in chat phrasing, and it terminates
+#: the capture via _PLACE_BOUNDARY below ("... to Parramatta, NSW" captures
+#: "Parramatta", which geocodes fine).
+_PLACE_CHARS = r"[\w\s'-]"
+#: Words that end a place name in practice -- everything after one of these
+#: is trailing sentence text, not part of the destination.
+_PLACE_STOP_WORDS = (
+    r"tomorrow|today|tonight|this|next|please|thanks|and|but|so|for|at|in|on|by|"
+    r"now|asap|with|via|around|before|after|because|if|when"
+)
+_PLACE_BOUNDARY = rf"(?=\s+(?:{_PLACE_STOP_WORDS})\b|[.?!,]|$)"
+
 _ROUTE_PLAN_FROM_TO_PATTERN = re.compile(
-    r"(?:plan (?:a )?trip|route|directions?|drive)\s+from\s+(?P<origin>.+?)\s+to\s+"
-    r"(?P<destination>.+?)(?:[.?!]|$)",
+    r"(?:plan (?:a )?trip|route|directions?)\s+from\s+"
+    rf"(?P<origin>{_PLACE_CHARS}{{1,60}}?)\s+to\s+"
+    rf"(?P<destination>{_PLACE_CHARS}{{1,60}}?){_PLACE_BOUNDARY}",
     re.IGNORECASE,
 )
 _ROUTE_PLAN_TO_ONLY_PATTERN = re.compile(
     r"(?:warnings? on the route to|directions? to|route to|plan (?:a )?trip to|drive to)"
-    r"\s+(?P<destination>.+?)(?:[.?!]|$)",
+    rf"\s+(?P<destination>{_PLACE_CHARS}{{1,60}}?){_PLACE_BOUNDARY}",
     re.IGNORECASE,
 )
 
@@ -209,23 +244,34 @@ class RoutePlanIntent:
     destination: str
 
 
+def _clean_place(value: str) -> str:
+    """Trim whitespace and any leading/trailing punctuation the place-name
+    character class allows mid-name but never at an edge (a hyphen in
+    "Ryde-Meadowbank", an apostrophe in "O'Connell")."""
+    return value.strip().strip(",-'").strip()
+
+
 def _detect_route_plan_intent(query: str) -> RoutePlanIntent | None:
     """Regex-based extraction of a route-planning request, matching phrases
     like "plan a trip from X to Y" or "warnings on the route to Z". Not
     NLP -- deliberately simple, same substring/keyword-matching philosophy
     as _detect_report_intent. If only a destination is found (no explicit
     "from"), origin is None and the caller asks a clarifying follow-up
-    instead of guessing a starting point."""
+    instead of guessing a starting point. Returns None (falling through to
+    RAG) for ordinary telematics questions that merely mention driving --
+    see the pattern comments above."""
     from_to_match = _ROUTE_PLAN_FROM_TO_PATTERN.search(query)
     if from_to_match:
-        return RoutePlanIntent(
-            origin=from_to_match.group("origin").strip(),
-            destination=from_to_match.group("destination").strip(),
-        )
+        origin = _clean_place(from_to_match.group("origin"))
+        destination = _clean_place(from_to_match.group("destination"))
+        if origin and destination:
+            return RoutePlanIntent(origin=origin, destination=destination)
 
     to_only_match = _ROUTE_PLAN_TO_ONLY_PATTERN.search(query)
     if to_only_match:
-        return RoutePlanIntent(origin=None, destination=to_only_match.group("destination").strip())
+        destination = _clean_place(to_only_match.group("destination"))
+        if destination:
+            return RoutePlanIntent(origin=None, destination=destination)
 
     return None
 
@@ -299,7 +345,11 @@ def post_chat(
                 route_plan_intent.origin, route_plan_intent.destination, db=db
             )
             if route_result.unavailable:
-                answer_text = ROUTE_DATA_UNAVAILABLE_TEXT
+                # Final-review Fix 5: prefer the failure-specific message
+                # (e.g. "I couldn't find a location matching 'Parramattaa'")
+                # over the generic outage text, which is misleading advice
+                # when the real problem is a misspelled place name.
+                answer_text = route_result.unavailable_message or ROUTE_DATA_UNAVAILABLE_TEXT
             else:
                 answer_text = summarize_route_plan(
                     route_result, route_plan_intent.origin, route_plan_intent.destination

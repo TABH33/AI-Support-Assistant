@@ -40,7 +40,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.ai.chat_service import FALLBACK_TEXT
-from app.ai.route_planning import ROUTE_DATA_UNAVAILABLE_TEXT, RoutePlanResult
+from app.ai.route_planning import (
+    GEOCODING_FAILED_TEXT,
+    ROUTE_DATA_UNAVAILABLE_TEXT,
+    UNAVAILABLE_REASON_GEOCODING,
+    UNAVAILABLE_REASON_SERVICE,
+    RoutePlanResult,
+)
 from app.auth.security import create_access_token, hash_password
 from app.config import settings
 from app.database import get_db
@@ -380,7 +386,12 @@ def test_route_plan_intent_with_only_destination_asks_for_origin(client, fleet_a
 
 def test_route_plan_intent_unavailable_returns_graceful_fallback(client, fleet_a):
     unavailable_result = RoutePlanResult(
-        distance_km=None, duration_min=None, geometry=None, unavailable=True
+        distance_km=None,
+        duration_min=None,
+        geometry=None,
+        unavailable=True,
+        unavailable_reason=UNAVAILABLE_REASON_SERVICE,
+        unavailable_message=ROUTE_DATA_UNAVAILABLE_TEXT,
     )
     with patch("app.api.chat.build_route_plan", return_value=unavailable_result):
         response = client.post(
@@ -396,6 +407,102 @@ def test_route_plan_intent_unavailable_returns_graceful_fallback(client, fleet_a
     body = response.json()
     assert body["answer"] == ROUTE_DATA_UNAVAILABLE_TEXT
     assert body["escalated"] is False
+    assert body["route_plan"] is None
+
+
+# ---------------------------------------------------------------------------
+# Final-review Fix 4: route-plan intent must not swallow trailing sentence
+# text, and must not hijack ordinary telematics/RAG questions.
+# ---------------------------------------------------------------------------
+
+
+def test_route_plan_intent_does_not_swallow_trailing_words_into_destination(
+    client, fleet_a
+):
+    """"...to Parramatta tomorrow morning" must geocode "Parramatta", not
+    the literal string "Parramatta tomorrow morning" (which ORS cannot
+    resolve, producing a spurious "route data unavailable")."""
+    route_result = RoutePlanResult(
+        distance_km=23.4,
+        duration_min=38.2,
+        geometry={"type": "LineString", "coordinates": []},
+        warnings=[],
+    )
+    with (
+        patch("app.api.chat.build_route_plan", return_value=route_result) as mock_build,
+        patch("app.api.chat.summarize_route_plan", return_value="A 23.4km trip."),
+    ):
+        response = client.post(
+            "/chat",
+            json={
+                "query": "plan a trip from Sydney CBD to Parramatta tomorrow morning",
+                "device_id": fleet_a["device"].device_id,
+            },
+            headers=fleet_a["headers"],
+        )
+
+    assert response.status_code == 200
+    mock_build.assert_called_once_with("Sydney CBD", "Parramatta", db=ANY)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        # Contains "drive", "from" and "to" -- an ordinary question about
+        # driving, not a request to plan a route.
+        "How long does it take to drive from home to work?",
+        "why did my driver drive from the depot to the client site so slowly",
+    ],
+)
+def test_ordinary_driving_question_falls_through_to_rag_not_route_planning(
+    client, fleet_a, query
+):
+    with (
+        patch("app.api.chat.build_route_plan") as mock_build,
+        patch(
+            "app.ai.chat_service.chat_completion",
+            return_value='{"answer": "About 25 minutes.", "confidence": 0.9}',
+        ) as mock_chat,
+    ):
+        response = client.post(
+            "/chat",
+            json={"query": query, "device_id": fleet_a["device"].device_id},
+            headers=fleet_a["headers"],
+        )
+
+    assert response.status_code == 200
+    mock_build.assert_not_called()
+    mock_chat.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Final-review Fix 5: a bad place name gets spelling advice, not "try again".
+# ---------------------------------------------------------------------------
+
+
+def test_route_plan_geocoding_failure_returns_the_place_specific_message(client, fleet_a):
+    geocoding_failure = RoutePlanResult(
+        distance_km=None,
+        duration_min=None,
+        geometry=None,
+        unavailable=True,
+        unavailable_reason=UNAVAILABLE_REASON_GEOCODING,
+        unavailable_message=GEOCODING_FAILED_TEXT.format(place="Parramattaa"),
+    )
+    with patch("app.api.chat.build_route_plan", return_value=geocoding_failure):
+        response = client.post(
+            "/chat",
+            json={
+                "query": "plan a trip from Sydney CBD to Parramattaa",
+                "device_id": fleet_a["device"].device_id,
+            },
+            headers=fleet_a["headers"],
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "Parramattaa" in body["answer"]
+    assert body["answer"] != ROUTE_DATA_UNAVAILABLE_TEXT
     assert body["route_plan"] is None
 
 
