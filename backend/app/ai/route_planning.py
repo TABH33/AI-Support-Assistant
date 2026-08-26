@@ -12,6 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from app.geo import haversine_distance_km
+from app.integrations.open_meteo import WeatherServiceError, get_forecast
 
 DEFAULT_SAMPLE_POINT_COUNT = 8
 
@@ -53,3 +54,82 @@ def sample_route_points(
             )
         )
     return points
+
+
+RISK_ZONE_RADIUS_KM = 1.0
+RISK_ZONE_EVENT_THRESHOLD = 3
+WEATHER_PRECIPITATION_THRESHOLD = 60.0
+WEATHER_WIND_THRESHOLD_KMH = 40.0
+WEATHER_VISIBILITY_THRESHOLD_M = 1000.0
+
+
+@dataclass
+class Warning:
+    latitude: float
+    longitude: float
+    distance_from_origin_km: float
+    type: str  # "weather" | "risk_zone"
+    severity: str  # "moderate" | "high"
+    description: str
+
+
+def evaluate_weather_warnings(points: list[SamplePoint]) -> list[Warning]:
+    """Call Open-Meteo for each sample point and flag one as a weather
+    warning when precipitation probability, wind speed, or (low) visibility
+    crosses a defined threshold. A single point can only produce one
+    warning -- the FIRST threshold crossed wins (precipitation, then wind,
+    then visibility) -- since the response is meant to be a short,
+    actionable list, not one row per metric. A WeatherServiceError for one
+    point is swallowed (that point is simply not flagged) rather than
+    failing the whole route -- one point's transient weather-lookup failure
+    should not take down the rest of the warnings list."""
+    warnings: list[Warning] = []
+    for point in points:
+        try:
+            forecast = get_forecast(point.latitude, point.longitude)
+        except WeatherServiceError:
+            continue
+
+        if forecast.precipitation_probability > WEATHER_PRECIPITATION_THRESHOLD:
+            warnings.append(
+                Warning(
+                    latitude=point.latitude,
+                    longitude=point.longitude,
+                    distance_from_origin_km=point.distance_from_origin_km,
+                    type="weather",
+                    severity="high" if forecast.precipitation_probability > 80.0 else "moderate",
+                    description=(
+                        f"Heavy rain forecast near this segment "
+                        f"({forecast.precipitation_probability:.0f}% probability)."
+                    ),
+                )
+            )
+        elif forecast.wind_speed_kmh > WEATHER_WIND_THRESHOLD_KMH:
+            warnings.append(
+                Warning(
+                    latitude=point.latitude,
+                    longitude=point.longitude,
+                    distance_from_origin_km=point.distance_from_origin_km,
+                    type="weather",
+                    severity="moderate",
+                    description=(
+                        f"Strong winds forecast near this segment "
+                        f"({forecast.wind_speed_kmh:.0f} km/h)."
+                    ),
+                )
+            )
+        elif forecast.visibility_m < WEATHER_VISIBILITY_THRESHOLD_M:
+            warnings.append(
+                Warning(
+                    latitude=point.latitude,
+                    longitude=point.longitude,
+                    distance_from_origin_km=point.distance_from_origin_km,
+                    type="weather",
+                    severity="moderate",
+                    description=(
+                        f"Low visibility forecast near this segment "
+                        f"({forecast.visibility_m:.0f}m)."
+                    ),
+                )
+            )
+    return warnings
