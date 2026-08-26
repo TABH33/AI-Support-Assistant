@@ -138,6 +138,17 @@ ROAD_NAMES = [
     "Coastal Hwy", "City Center", "Rural Route 9",
 ]
 
+# Fixed real-world Sydney corridors (approximate landmark coordinates) used
+# to place synthetic DrivingEvent coordinates near a small, predictable set
+# of demo routes -- see docs/superpowers/specs/2026-08-26-route-planning-warnings-design.md
+# ("Demo routes"). Deliberately the ONLY hardcoded real-world geography in
+# this codebase; do not add more without updating that spec.
+DEMO_CORRIDORS: list[tuple[str, tuple[float, float], tuple[float, float]]] = [
+    ("Sydney CBD to Parramatta", (-33.8688, 151.2093), (-33.8150, 151.0011)),
+    ("Sydney CBD to Sydney Airport", (-33.8688, 151.2093), (-33.9399, 151.1753)),
+    ("Sydney CBD to Bondi Beach", (-33.8688, 151.2093), (-33.8908, 151.2743)),
+]
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -349,6 +360,23 @@ _EVENT_DETAIL_TEMPLATES = {
 }
 
 
+def _point_along_corridor(rng: random.Random) -> tuple[float, float]:
+    """Pick a random point along a random DEMO_CORRIDORS entry, jittered by
+    a small random offset (roughly tens to a couple hundred meters) so
+    seeded DrivingEvent coordinates cluster near -- not exactly on -- the
+    corridor line. Keeps coordinates synthetic (never a real address or
+    real driver location) while guaranteeing the fixed demo routes actually
+    pass near seeded risk-zone events."""
+    _, start, end = rng.choice(DEMO_CORRIDORS)
+    t = rng.random()
+    lat = start[0] + (end[0] - start[0]) * t
+    lon = start[1] + (end[1] - start[1]) * t
+    # ~0.003 degrees of latitude is roughly 300m.
+    lat += rng.uniform(-0.003, 0.003)
+    lon += rng.uniform(-0.003, 0.003)
+    return round(lat, 6), round(lon, 6)
+
+
 def _generate_driving_events(rng: random.Random, trips: list[Trip]) -> list[DrivingEvent]:
     types = list(DrivingEventType)
     per_type = NUM_DRIVING_EVENTS // len(types)
@@ -363,12 +391,15 @@ def _generate_driving_events(rng: random.Random, trips: list[Trip]) -> list[Driv
         window_end = trip.end_time or (trip.start_time + timedelta(hours=2))
         window_seconds = max(int((window_end - trip.start_time).total_seconds()), 1)
         event_time = trip.start_time + timedelta(seconds=rng.randint(0, window_seconds))
+        latitude, longitude = _point_along_corridor(rng)
 
         event = DrivingEvent(
             event_type=event_type,
             event_time=event_time,
             location=rng.choice(ROAD_NAMES),
             details=_EVENT_DETAIL_TEMPLATES[event_type](rng),
+            latitude=latitude,
+            longitude=longitude,
         )
         event.trip = trip
         events.append(event)
