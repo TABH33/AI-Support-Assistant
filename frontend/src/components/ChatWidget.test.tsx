@@ -7,6 +7,12 @@ import { SelectionProvider, useSelection } from '../context/SelectionContext'
 import { makeFakeJwt } from '../test-support/jwt'
 import type { Device } from '../types/telematics'
 
+vi.mock('./RouteMap', () => ({
+  RouteMap: ({ routePlan }: { routePlan: { distance_km: number | null } }) => (
+    <div data-testid="mock-route-map" data-distance={routePlan.distance_km ?? undefined} />
+  ),
+}))
+
 // Customer 100's devices -- what an unfiltered `GET /devices` (a `customer`
 // caller's own tenant-scoped view) or an explicit `?customer_id=100` returns.
 const customerADevices: Device[] = [
@@ -574,6 +580,65 @@ describe('ChatWidget', () => {
 
       expect(screen.queryByTestId('ces-survey')).not.toBeInTheDocument()
       expect(screen.queryByRole('dialog', { name: /ai chat assistant/i })).not.toBeInTheDocument()
+    })
+  })
+
+  describe('route-planning + warnings', () => {
+    it('renders the route map panel when the assistant response includes route_plan', async () => {
+      ;(fetch as unknown as Mock).mockImplementation(async (url: string) => {
+        if (url.includes('/devices')) {
+          return { ok: true, status: 200, json: async () => customerADevices }
+        }
+        if (url.includes('/chat')) {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              session_id: 42,
+              message_id: 555,
+              answer: 'This route is 23.4km and takes about 38 minutes, with a risk zone near the midpoint.',
+              confidence: 1.0,
+              escalated: false,
+              route_plan: {
+                distance_km: 23.4,
+                duration_min: 38.2,
+                geometry: {
+                  type: 'LineString',
+                  coordinates: [
+                    [151.2093, -33.8688],
+                    [151.0011, -33.815],
+                  ],
+                },
+                warnings: [],
+                unavailable: false,
+              },
+            }),
+          }
+        }
+        throw new Error(`Unexpected fetch to ${url}`)
+      })
+      renderWidget()
+
+      await openWidget()
+      await sendMessage('plan a trip from Sydney CBD to Parramatta')
+
+      await waitFor(() => {
+        expect(screen.getByTestId('chat-route-map-panel')).toBeInTheDocument()
+      })
+      expect(screen.getByTestId('mock-route-map')).toHaveAttribute('data-distance', '23.4')
+    })
+
+    it('does not render the route map panel for an ordinary chat response', async () => {
+      mockChatFetch()
+      renderWidget()
+
+      await openWidget()
+      await sendMessage('How is my fleet doing?')
+
+      await waitFor(() => {
+        expect(screen.getByText('Your vehicle traveled 42.5 km on its last trip.')).toBeInTheDocument()
+      })
+      expect(screen.queryByTestId('chat-route-map-panel')).not.toBeInTheDocument()
     })
   })
 })

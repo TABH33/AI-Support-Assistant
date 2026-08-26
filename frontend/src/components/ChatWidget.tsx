@@ -66,8 +66,10 @@ import { apiGet, apiPatch, apiPost } from '../lib/apiClient'
 import { useAuth } from '../context/AuthProvider'
 import { useSelection } from '../context/SelectionContext'
 import { CesSurvey } from './CesSurvey'
+import { RouteMap } from './RouteMap'
 import type { ChatMessageFeedbackResponse, ChatRequest, ChatResponse } from '../types/chat'
 import type { Device } from '../types/telematics'
+import type { RoutePlanResult } from '../types/routePlan'
 
 interface ChatWidgetMessage {
   id: string
@@ -82,6 +84,10 @@ interface ChatWidgetMessage {
   /** Thumbs up (`true`) / down (`false`) / not yet rated (`undefined`).
    * Only meaningful on assistant messages. */
   feedback?: boolean
+  /** Structured route data (route-planning + warnings feature) -- only set
+   * on an assistant message that answered a route-plan chat intent
+   * successfully. Rendered as an inline map beside the transcript. */
+  routePlan?: RoutePlanResult
 }
 
 /** sessionStorage key used to remember "the disclosure banner has already been shown this browser session" (POC-level persistence, per the task brief). */
@@ -317,6 +323,7 @@ export function ChatWidget() {
           content: response.answer,
           escalated: response.escalated,
           chatMessageId: response.message_id,
+          routePlan: response.route_plan ?? undefined,
         },
       ])
     } catch (err) {
@@ -336,14 +343,19 @@ export function ChatWidget() {
     user,
   ])
 
+  const latestRoutePlanMessage = [...messages].reverse().find((message) => message.routePlan)
+
   return (
     <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end">
       {isOpen && (
         <div
           role="dialog"
           aria-label="AI chat assistant"
-          className="mb-3 flex h-[32rem] w-80 flex-col overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-800"
+          className={`mb-3 flex h-[32rem] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-800 ${
+            latestRoutePlanMessage ? 'w-[44rem]' : 'w-80'
+          }`}
         >
+          <div className="flex h-full w-80 flex-shrink-0 flex-col">
           <div className="flex items-center justify-between bg-indigo-600 px-4 py-3 text-white">
             <span className="font-semibold">AI Assistant</span>
             <button
@@ -474,6 +486,16 @@ export function ChatWidget() {
                 </form>
               )}
             </>
+          )}
+          </div>
+
+          {latestRoutePlanMessage?.routePlan && (
+            <div
+              data-testid="chat-route-map-panel"
+              className="flex-1 border-l border-gray-200 p-2 dark:border-gray-700"
+            >
+              <RouteMap routePlan={latestRoutePlanMessage.routePlan} />
+            </div>
           )}
         </div>
       )}
