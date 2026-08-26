@@ -34,6 +34,8 @@ driver_id/trip_id/vehicle_id they pass:
 
 from __future__ import annotations
 
+import re
+from dataclasses import dataclass
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -44,13 +46,25 @@ from app.ai.chat_service import answer_query
 from app.ai.escalation import handle_answer
 from app.ai.reports import generate_end_of_day_report, generate_start_of_day_report
 from app.ai.retrieval import retrieve_context
+from app.ai.route_planning import (
+    ROUTE_DATA_UNAVAILABLE_TEXT,
+    RoutePlanResult,
+    build_route_plan,
+    summarize_route_plan,
+)
+from app.api.route_plan import RoutePlanResponse, route_plan_result_to_response
 from app.auth.dependencies import CurrentUser, require_role
 from app.database import get_db
 from app.models.chat import ChatMessage, ChatSession, Notification, SupportTicket
 from app.models.device import Device
 from app.models.enums import ChatMessageRole, PreferredNotificationMethod, Priority, TicketStatus
 from app.repositories.chat import create_chat_session, create_notification, create_support_ticket
-from app.security.audit import ACTION_CHAT_ANSWER, ACTION_REPORT_GENERATED, record_audit_event
+from app.security.audit import (
+    ACTION_CHAT_ANSWER,
+    ACTION_REPORT_GENERATED,
+    ACTION_ROUTE_PLAN_GENERATED,
+    record_audit_event,
+)
 
 router = APIRouter(tags=["chat"])
 
@@ -105,6 +119,7 @@ class ChatResponse(BaseModel):
     answer: str
     confidence: float
     escalated: bool
+    route_plan: RoutePlanResponse | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +188,49 @@ def _create_new_session(
 
 
 # ---------------------------------------------------------------------------
+# Route-plan intent routing
+# ---------------------------------------------------------------------------
+
+_ROUTE_PLAN_FROM_TO_PATTERN = re.compile(
+    r"(?:plan (?:a )?trip|route|directions?|drive)\s+from\s+(?P<origin>.+?)\s+to\s+"
+    r"(?P<destination>.+?)(?:[.?!]|$)",
+    re.IGNORECASE,
+)
+_ROUTE_PLAN_TO_ONLY_PATTERN = re.compile(
+    r"(?:warnings? on the route to|directions? to|route to|plan (?:a )?trip to|drive to)"
+    r"\s+(?P<destination>.+?)(?:[.?!]|$)",
+    re.IGNORECASE,
+)
+
+
+@dataclass
+class RoutePlanIntent:
+    origin: str | None
+    destination: str
+
+
+def _detect_route_plan_intent(query: str) -> RoutePlanIntent | None:
+    """Regex-based extraction of a route-planning request, matching phrases
+    like "plan a trip from X to Y" or "warnings on the route to Z". Not
+    NLP -- deliberately simple, same substring/keyword-matching philosophy
+    as _detect_report_intent. If only a destination is found (no explicit
+    "from"), origin is None and the caller asks a clarifying follow-up
+    instead of guessing a starting point."""
+    from_to_match = _ROUTE_PLAN_FROM_TO_PATTERN.search(query)
+    if from_to_match:
+        return RoutePlanIntent(
+            origin=from_to_match.group("origin").strip(),
+            destination=from_to_match.group("destination").strip(),
+        )
+
+    to_only_match = _ROUTE_PLAN_TO_ONLY_PATTERN.search(query)
+    if to_only_match:
+        return RoutePlanIntent(origin=None, destination=to_only_match.group("destination").strip())
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Report-intent routing
 # ---------------------------------------------------------------------------
 
@@ -226,10 +284,31 @@ def post_chat(
     # docstring's security note).
     customer_id = chat_session.customer_id
 
-    report_intent = _detect_report_intent(payload.query)
-    if report_intent is not None:
-        # Reports bypass RAG/escalation entirely -- same "always delivered"
-        # design as the standalone /reports/* endpoints (app/ai/reports.py).
+    route_plan_intent = _detect_route_plan_intent(payload.query)
+    report_intent = _detect_report_intent(payload.query) if route_plan_intent is None else None
+    route_plan_payload: RoutePlanResult | None = None
+
+    if route_plan_intent is not None:
+        # Route-plan requests bypass RAG/escalation entirely, same "always
+        # delivered" design as report requests -- checked first since its
+        # keyword set is more specific than the report one.
+        if route_plan_intent.origin is None:
+            answer_text = "Which starting point should I plan this route from?"
+        else:
+            route_result = build_route_plan(
+                route_plan_intent.origin, route_plan_intent.destination, db=db
+            )
+            if route_result.unavailable:
+                answer_text = ROUTE_DATA_UNAVAILABLE_TEXT
+            else:
+                answer_text = summarize_route_plan(
+                    route_result, route_plan_intent.origin, route_plan_intent.destination
+                )
+                route_plan_payload = route_result
+        confidence = 1.0
+        escalated = False
+        audit_action = ACTION_ROUTE_PLAN_GENERATED
+    elif report_intent is not None:
         report_text = (
             generate_start_of_day_report(customer_id, db=db)
             if report_intent == "start_of_day"
@@ -314,6 +393,7 @@ def post_chat(
         answer=answer_text,
         confidence=confidence,
         escalated=escalated,
+        route_plan=route_plan_result_to_response(route_plan_payload) if route_plan_payload else None,
     )
 
 
