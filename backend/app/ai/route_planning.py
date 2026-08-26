@@ -13,10 +13,17 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session
 
+from app.ai.llm import chat_completion
 from app.datasources.base import TelematicsDataSource
 from app.datasources.synthetic import SyntheticDataSource
 from app.geo import haversine_distance_km
 from app.integrations.open_meteo import WeatherServiceError, get_forecast
+from app.integrations.openrouteservice import (
+    Coordinates,
+    RouteServiceError,
+    geocode,
+    get_directions,
+)
 
 DEFAULT_SAMPLE_POINT_COUNT = 8
 
@@ -176,3 +183,101 @@ def evaluate_risk_zone_warnings(
             )
         )
     return warnings
+
+
+ROUTE_DATA_UNAVAILABLE_TEXT = (
+    "I can't retrieve route data right now -- please try again shortly."
+)
+
+
+@dataclass
+class RoutePlanResult:
+    distance_km: float | None
+    duration_min: float | None
+    geometry: dict | None
+    warnings: list[Warning] = field(default_factory=list)
+    unavailable: bool = False
+
+
+def build_route_plan(
+    origin: str | Coordinates,
+    destination: str | Coordinates,
+    waypoints: list[str | Coordinates] | None = None,
+    *,
+    db: Session,
+    data_source: TelematicsDataSource | None = None,
+) -> RoutePlanResult:
+    """Top-level entry point: resolves origin/destination/waypoints
+    (geocoding any plain string), fetches the route, samples points along
+    it, evaluates both warning types, and returns one RoutePlanResult. On
+    any RouteServiceError (geocoding or directions failure), returns
+    unavailable=True instead of raising -- callers (POST /route-plan, the
+    chat route-plan intent) must never crash on a downstream API outage."""
+    try:
+        origin_coords = geocode(origin) if isinstance(origin, str) else origin
+        destination_coords = geocode(destination) if isinstance(destination, str) else destination
+        waypoint_coords = (
+            [geocode(w) if isinstance(w, str) else w for w in waypoints] if waypoints else None
+        )
+        route = get_directions(origin_coords, destination_coords, waypoint_coords)
+    except RouteServiceError:
+        return RoutePlanResult(distance_km=None, duration_min=None, geometry=None, unavailable=True)
+
+    points = sample_route_points(route.geometry)
+    warnings = evaluate_weather_warnings(points) + evaluate_risk_zone_warnings(
+        points, db=db, data_source=data_source
+    )
+
+    return RoutePlanResult(
+        distance_km=route.distance_km,
+        duration_min=route.duration_min,
+        geometry=route.geometry,
+        warnings=warnings,
+    )
+
+
+def build_route_summary_prompt(
+    route_plan: RoutePlanResult, origin_label: str, destination_label: str
+) -> list[dict[str, str]]:
+    """Build the system/user messages for the LLM's natural-language route
+    summary. Only meaningful when route_plan.unavailable is False -- callers
+    must check that before calling this."""
+    warning_lines = (
+        "\n".join(
+            f"- {w.type} warning at {w.distance_from_origin_km:.1f}km from origin "
+            f"(severity: {w.severity}): {w.description}"
+            for w in route_plan.warnings
+        )
+        or "(no warnings flagged on this route)"
+    )
+    system_prompt = (
+        "You are a support assistant for a fleet telematics platform. "
+        "Summarize the route data given below in plain, natural language for "
+        "a fleet driver or dispatcher. Use ONLY the numbers and warnings "
+        "given -- never invent a distance, duration, or warning not listed. "
+        "Be concise: state the distance and duration, then call out any "
+        "warnings and a brief recommendation (e.g. reduced speed near a risk "
+        "zone, or allowing extra time for weather)."
+    )
+    user_content = (
+        f"Route: {origin_label} to {destination_label}\n"
+        f"Distance: {route_plan.distance_km:.1f} km\n"
+        f"Duration: {route_plan.duration_min:.0f} minutes\n"
+        f"Warnings:\n{warning_lines}"
+    )
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_content},
+    ]
+
+
+def summarize_route_plan(
+    route_plan: RoutePlanResult, origin_label: str, destination_label: str
+) -> str:
+    """Build the route summary prompt and call the LLM, returning the
+    natural-language summary text. Mirrors app/ai/reports.py's pattern of
+    owning its own LLM call internally rather than exposing chat_completion
+    to callers. Only meaningful when route_plan.unavailable is False --
+    callers must check that first."""
+    messages = build_route_summary_prompt(route_plan, origin_label, destination_label)
+    return chat_completion(messages)
