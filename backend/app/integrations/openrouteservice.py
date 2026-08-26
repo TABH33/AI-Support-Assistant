@@ -59,10 +59,11 @@ class RouteResult:
 def geocode(place_name: str, *, timeout: float = _DEFAULT_TIMEOUT_SECONDS) -> Coordinates:
     """Resolve a free-text place name to coordinates via ORS's Pelias-based
     geocoding endpoint. Raises GeocodingError if no match is found."""
-    params = {"api_key": settings.ors_api_key, "text": place_name, "size": 1}
+    params = {"text": place_name, "size": 1}
+    headers = {"Authorization": settings.ors_api_key}
 
     try:
-        response = httpx.get(_GEOCODE_URL, params=params, timeout=timeout)
+        response = httpx.get(_GEOCODE_URL, params=params, headers=headers, timeout=timeout)
         response.raise_for_status()
     except httpx.HTTPError as exc:
         logger.error("OpenRouteService geocoding request failed for %r: %s", place_name, exc)

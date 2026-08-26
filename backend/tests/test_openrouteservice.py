@@ -6,6 +6,7 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+from app.config import settings
 from app.integrations.openrouteservice import (
     Coordinates,
     GeocodingError,
@@ -43,6 +44,23 @@ def test_geocode_returns_coordinates_from_first_match():
         result = geocode("Sydney CBD")
 
         assert result == Coordinates(latitude=-33.8688, longitude=151.2093)
+
+
+def test_geocode_sends_api_key_via_header_not_query_param():
+    """Regression test: the API key must never appear in the request URL/params,
+    since httpx.HTTPStatusError's str() includes the full URL, and that string
+    can end up in logs or exception messages on a non-2xx response."""
+    with patch("app.integrations.openrouteservice.httpx.get") as mock_get:
+        mock_get.return_value = _mock_response(
+            _FAKE_GEOCODE_REQUEST,
+            json_body={"features": [{"geometry": {"coordinates": [151.2093, -33.8688]}}]},
+        )
+
+        geocode("Sydney CBD")
+
+        args, kwargs = mock_get.call_args
+        assert "api_key" not in kwargs["params"]
+        assert kwargs["headers"]["Authorization"] == settings.ors_api_key
 
 
 def test_geocode_raises_geocoding_error_on_no_match():
