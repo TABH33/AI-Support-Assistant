@@ -87,6 +87,23 @@ def test_record_audit_event_persists_and_returns_row(db_session):
     assert reloaded.description == "confidence=0.9 escalated=False"
 
 
+def test_record_audit_event_accepts_route_plan_generated_action(db_session):
+    from app.security.audit import ACTION_ROUTE_PLAN_GENERATED
+
+    entry = record_audit_event(
+        db_session,
+        actor_id=1,
+        actor_role="customer",
+        action=ACTION_ROUTE_PLAN_GENERATED,
+        description="origin=Sydney CBD destination=Parramatta unavailable=False",
+    )
+
+    assert entry.action == "route_plan_generated"
+    db_session.expire_all()
+    reloaded = db_session.get(AuditLog, entry.audit_log_id)
+    assert reloaded.action == ACTION_ROUTE_PLAN_GENERATED
+
+
 def test_record_audit_event_allows_null_description(db_session):
     entry = record_audit_event(
         db_session, actor_id=1, actor_role="support_agent", action="some_future_action"

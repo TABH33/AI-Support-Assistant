@@ -167,6 +167,22 @@ class TelematicsDataSource(Protocol):
         customer."""
         ...
 
+    def get_driving_events_near(
+        self, latitude: float, longitude: float, radius_km: float
+    ) -> list[DrivingEvent]:
+        """Return DrivingEvents within radius_km of (latitude, longitude),
+        across the WHOLE synthetic fleet -- deliberately NOT customer_id
+        scoped, unlike every other method on this Protocol (see this
+        module's docstring for why customer_id is required elsewhere). A
+        "risk zone" is a property of a road segment's incident history, not
+        of any one customer's fleet, so pooling across all customers gives a
+        meaningful signal where a single customer's own (usually thin) trip
+        history would not. Results carry only event type/location/time --
+        never driver identity -- matching this POC's existing anonymization
+        rule; callers must not join back to Driver to attach an identity to
+        a result from this method."""
+        ...
+
     def get_knowledge_base_articles(
         self, category: str | None = None
     ) -> list[KnowledgeBaseArticle]:

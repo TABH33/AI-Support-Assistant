@@ -12,14 +12,17 @@
     "test:ui": "vitest --ui"
   },
   "dependencies": {
+    "leaflet": "^1.9.4",
     "react": "^18.3.x",
     "react-dom": "^18.3.x",
+    "react-leaflet": "^4.2.1",
     "react-router-dom": "^7.18.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.2",
+    "@types/leaflet": "^1.9.22",
     "@types/node": "^24.13.3",
     "@types/react": "^18.3.x",
     "@types/react-dom": "^18.3.x",

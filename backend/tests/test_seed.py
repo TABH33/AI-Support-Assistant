@@ -152,6 +152,20 @@ def test_driving_event_types_are_evenly_covered(data):
     assert counts[DrivingEventType.ROUTE_DEVIATION] == 50
 
 
+def test_driving_events_have_coordinates_near_a_demo_corridor(data):
+    from app.seed.generator import DEMO_CORRIDORS
+
+    assert len(data.driving_events) > 0
+    for event in data.driving_events:
+        assert event.latitude is not None
+        assert event.longitude is not None
+        assert any(
+            min(start[0], end[0]) - 0.01 <= event.latitude <= max(start[0], end[0]) + 0.01
+            and min(start[1], end[1]) - 0.01 <= event.longitude <= max(start[1], end[1]) + 0.01
+            for _, start, end in DEMO_CORRIDORS
+        )
+
+
 def test_every_chat_session_device_belongs_to_its_customer(data):
     for session in data.chat_sessions:
         assert session.device.customer is session.customer
