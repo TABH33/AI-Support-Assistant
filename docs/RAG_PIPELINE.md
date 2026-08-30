@@ -7,7 +7,11 @@ decides whether to trust that answer enough to show it.
 
 ```mermaid
 flowchart LR
-    Q["Customer query"] --> RI{"Report intent?\n(keyword match)"}
+    Q["Customer query"] --> RPI{"Route-plan intent?\n(regex match)"}
+    RPI -- yes --> RP["ai/route_planning.py\nbuild_route_plan() +\nsummarize_route_plan()"]
+    RP --> A0["answer, confidence=1.0,\nescalated=false,\nroute_plan populated"]
+
+    RPI -- no --> RI{"Report intent?\n(keyword match)"}
     RI -- yes --> RG["ai/reports.py\ngenerate_start_of_day /\ngenerate_end_of_day"]
     RG --> A1["answer, confidence=1.0,\nescalated=false"]
 
@@ -23,16 +27,33 @@ flowchart LR
     ESC -- no --> FB["FALLBACK_TEXT +\nauto-created SupportTicket"]
 ```
 
+## Step 0: route-plan intent routing (bypasses RAG entirely, checked first)
+
+Runs before the report-intent check below — see
+[ROUTE_PLANNING.md](ROUTE_PLANNING.md#chat-integration) for the full regex
+and behavior. Matches phrases like `"plan a trip from X to Y"`. Checked
+first because its keyword set is more specific than the report check's.
+
 ## Step 1: report-intent routing (bypasses RAG entirely)
 
-Before anything else, `app/api/chat.py`'s `_detect_report_intent` does a
-plain substring check on the lowercased query:
+Before anything else *except* the route-plan check above,
+`app/api/chat.py`'s `_detect_report_intent` does a plain substring check on
+the lowercased query:
 
 - Matches `"start of day"`, `"start-of-day"`, `"morning report"`, `"morning
   summary"` → routes to `generate_start_of_day_report`.
 - Otherwise matches `"report"`, `"summary"`, `"daily digest"` → routes to
   `generate_end_of_day_report`.
 - No match → falls through to RAG (step 2 onward).
+
+**Known live gotcha**: this is a plain *substring* check, not a
+word-boundary one — `"report"` matches inside `"reported"`. A genuine
+question like *"my device hasn't reported its location in days"* gets
+hijacked into a report response instead of answering the real question.
+Confirmed live; not yet fixed (word-boundary regex, e.g. `\breport(s|ed|ing)?\b`
+tuned to still catch "report"/"reports" but not swallow unrelated words, is
+the straightforward fix). Avoid the literal substring `"report"` in
+questions that aren't actually report requests until this is tightened.
 
 This exists because the report generators (`app/ai/reports.py`) were built
 as standalone functions and were never wired into the chat pipeline — a

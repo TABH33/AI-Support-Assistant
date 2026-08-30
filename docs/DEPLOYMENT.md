@@ -83,6 +83,75 @@ db.commit()
 
 (Same pattern for `SupportAgent`, using its `support_agent_id` PK.)
 
+**Seeded row IDs are not stable across seed runs.** Don't assume
+`support_agent_id=1` is `agent-01@example.test`, or `customer_id=1` is
+`customer-01@example.test` — check the actual row before scripting against
+it (`SELECT support_agent_id, email FROM support_agents;`). This bit a live
+session: a password was set on the wrong `SupportAgent` row because an
+earlier deployment happened to have a different ID-to-email mapping than a
+later, freshly-reseeded one.
+
+**A fresh seed run leaves the knowledge base unindexed — RAG-adjacent
+retrieval will silently return near-random results until you fix it.**
+`python -m app.seed.seed` inserts `KnowledgeBaseArticle` rows with
+`embedding=None`; nothing populates them automatically. Run this
+immediately after every fresh seed:
+
+```bash
+docker compose exec backend python3 -c "
+from app.database import SessionLocal
+from app.ai.index_kb import index_knowledge_base
+db = SessionLocal()
+print(index_knowledge_base(db), 'articles indexed')
+"
+```
+
+Symptom if you skip this: chat answers cite completely unrelated knowledge-base
+articles (a harsh-braking question pulling up a device-pairing article), or
+score confidence far lower than the content should support, because
+`pgvector`'s similarity search against a `NULL` embedding column returns
+rows in effectively arbitrary order.
+
+## Route-planning feature setup
+
+The [route-planning + warnings feature](ROUTE_PLANNING.md) needs one extra
+secret beyond the standard set above:
+
+| Variable | Purpose | Get one |
+|---|---|---|
+| `ORS_API_KEY` | OpenRouteService directions + geocoding | Free signup at [openrouteservice.org/dev](https://openrouteservice.org/dev/#/signup) — no billing required |
+
+`docker-compose.yml`'s `backend.environment` block enumerates every
+variable explicitly (there's no `env_file:` directive), so **adding
+`ORS_API_KEY` to `.env` alone is not enough** — it must also appear as
+`ORS_API_KEY: ${ORS_API_KEY:-}` in that block, or the container never sees
+it and every route-plan request silently degrades to "route data
+unavailable" (see [ROUTE_PLANNING.md](ROUTE_PLANNING.md#security-notes) —
+this exact gap was caught by this feature's final code review and fixed;
+if you're deploying an older checkout, verify the line is actually there).
+
+Open-Meteo needs no key. No Ollama model changes are needed — route
+summaries reuse the same `OLLAMA_MODEL` as chat.
+
+To verify the whole pipeline end-to-end against real external APIs (not
+the mocked test suite):
+
+```bash
+docker compose exec backend python3 -c "
+from app.database import SessionLocal
+from app.ai.route_planning import build_route_plan
+db = SessionLocal()
+result = build_route_plan('Sydney CBD', 'Parramatta', db=db)
+print('unavailable:', result.unavailable)
+print('distance_km:', result.distance_km, 'duration_min:', result.duration_min)
+print('warnings:', len(result.warnings))
+"
+```
+
+`unavailable: True` here almost always means `ORS_API_KEY` isn't reaching
+the container — check the compose env block above before assuming ORS
+itself is down.
+
 ## Known pitfalls (found deploying this exact repo)
 
 These are real bugs hit and fixed while standing this project up for the
@@ -145,6 +214,39 @@ use your actual username, not `$USER` from a root shell, which resolves to
 `root`). WSL2 automatically forwards `localhost` ports from the distro to
 Windows, so `http://localhost:3000`/`:8000` work from a Windows browser with
 no extra port-forwarding configuration.
+
+**WSL2 will silently kill your containers if nothing stays attached to the
+distro.** Every container exits cleanly (exit code 0, no crash, no error in
+`docker compose logs`) once WSL2 decides the distro is idle — which happens
+between separate, short-lived `wsl.exe -d <distro> -- ...` invocations, not
+just during genuine inactivity. This is easy to mistake for an application
+bug because nothing in the app or Docker logs explains it.
+
+Adding `vmIdleTimeout=-1` under `[wsl2]` in `%UserProfile%\.wslconfig`
+(requires `wsl --shutdown` + a fresh `wsl -d <distro>` to take effect) is
+the documented fix, but it did **not** stop the teardown in practice during
+this project's own deployment — containers still exited within about a
+minute regardless. If that setting doesn't hold for you either, the
+reliable workaround is a supervisory loop that keeps one process
+continuously attached to the distro and self-heals if anything goes down:
+
+```bash
+wsl -d <distro> -- bash -lc '
+cd ~/AI-Support-Assistant
+while true; do
+  docker compose up -d >/dev/null 2>&1
+  sleep 15
+done
+'
+```
+
+Run this in the background (a dedicated terminal, `nohup ... &`, or your
+harness's background-task equivalent) for the duration you need the
+deployment reachable — a demo, a testing session, etc. `docker compose up
+-d` on an already-up stack is a cheap no-op, so the 15-second poll costs
+nothing when everything is already healthy, and heals a teardown within
+15 seconds of it happening instead of leaving the app unreachable until
+someone notices and manually restarts it.
 
 ## Troubleshooting
 
