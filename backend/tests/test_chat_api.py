@@ -900,6 +900,7 @@ def test_support_agent_can_reuse_any_customers_session(client, db_session, fleet
         )
     assert response.status_code == 200
     assert response.json()["session_id"] == session_id
+    assert response.json()["escalated"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -1010,4 +1011,3 @@ def test_todays_routes_intent_reports_no_routes_when_none_planned(client, fleet_
     assert response.status_code == 200
     assert response.json()["answer"] == "No routes have been planned today."
     mock_chat.assert_not_called()
-    assert response.json()["escalated"] is False

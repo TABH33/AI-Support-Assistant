@@ -283,23 +283,28 @@ def _detect_route_plan_intent(query: str) -> RoutePlanIntent | None:
 # ---------------------------------------------------------------------------
 
 # Requires BOTH a route-word and a temporal/status word, so an ordinary
-# telematics question that happens to mention "risk" (e.g. "is harsh
-# braking a risk for this driver?") doesn't get swallowed here -- and so
-# this doesn't collide with _detect_route_plan_intent's "plan a NEW route"
-# phrasing, which is checked first (see post_chat below).
+# telematics/KB question that happens to mention "route" doesn't get
+# swallowed here -- e.g. "are route deviations a risk to my fleet?" (which
+# should hit RAG/the seeded "Route deviation alerts explained" article, not
+# this intent) contains "route" but neither "today" nor "active". Bare
+# "risk"/"risks" are deliberately excluded from the signal words since this
+# app has real domain vocabulary built on "risk" (DrivingEventType.
+# ROUTE_DEVIATION, risk-related KB content) that would otherwise collide
+# with this intent. This also doesn't collide with _detect_route_plan_intent's
+# "plan a NEW route" phrasing, which is checked first (see post_chat below).
 _TODAYS_ROUTES_ROUTE_WORDS = ("route", "routes")
-_TODAYS_ROUTES_SIGNAL_WORDS = ("today", "active", "risk", "risks")
+_TODAYS_ROUTES_TEMPORAL_STATUS_WORDS = ("today", "active")
 
 
 def _detect_todays_routes_intent(query: str) -> bool:
     """True if the query is asking about already-planned routes (e.g.
-    "what routes were used today", "any risk signals for the routes
-    today", "active routes") rather than asking to plan a NEW route.
-    Deliberately simple keyword matching, same philosophy as
-    _detect_report_intent/_detect_route_plan_intent."""
+    "what routes were used today", "active routes", "route risks today")
+    rather than asking to plan a NEW route or ask an unrelated question
+    that happens to mention "route". Deliberately simple keyword matching,
+    same philosophy as _detect_report_intent/_detect_route_plan_intent."""
     lowered = query.lower()
     has_route_word = any(word in lowered for word in _TODAYS_ROUTES_ROUTE_WORDS)
-    has_signal_word = any(word in lowered for word in _TODAYS_ROUTES_SIGNAL_WORDS)
+    has_signal_word = any(word in lowered for word in _TODAYS_ROUTES_TEMPORAL_STATUS_WORDS)
     return has_route_word and has_signal_word
 
 

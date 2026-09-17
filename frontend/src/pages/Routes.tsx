@@ -11,11 +11,25 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { apiGet, apiPatch, apiPost } from '../lib/apiClient'
 import { useAuth } from '../context/AuthProvider'
 import { RouteMap } from '../components/RouteMap'
-import type { RoutePlanListItem, RoutePlanResult } from '../types/routePlan'
+import type { RoutePlanListItem, RoutePlanResult, RouteWarning } from '../types/routePlan'
 
 const STATUS_BADGE: Record<'active' | 'completed', string> = {
   active: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300',
   completed: 'bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300',
+}
+
+/** Label + color-coded badge classes per warning severity, same
+ * badge-styling convention as Alerts.tsx's ticket-status badges.
+ * `severity` isn't a strict union on the backend, so anything not
+ * recognized falls back to the neutral/gray style below. */
+const WARNING_SEVERITY_BADGE: Record<string, string> = {
+  high: 'bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300',
+  moderate: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300',
+  low: 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+}
+
+function warningBadgeClass(severity: string): string {
+  return WARNING_SEVERITY_BADGE[severity] ?? WARNING_SEVERITY_BADGE.low
 }
 
 function formatTime(value: string | null): string {
@@ -23,6 +37,41 @@ function formatTime(value: string | null): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return '—'
   return date.toLocaleString(undefined, { hour: '2-digit', minute: '2-digit' })
+}
+
+/** e.g. "23.4 km · 38 min" -- either half renders as an em dash when its
+ * value is null (a route saved with `unavailable=true` has no distance/
+ * duration since ORS/geocoding never returned one). */
+function formatDistanceDuration(distanceKm: number | null, durationMin: number | null): string {
+  const distance = distanceKm === null ? '—' : `${distanceKm.toFixed(1)} km`
+  const duration = durationMin === null ? '—' : `${Math.round(durationMin)} min`
+  return `${distance} · ${duration}`
+}
+
+/** Per-warning severity badge + description, shown under a route's
+ * summary line so a manager can see whether a route's warnings were
+ * actually severe, not just how many there were. */
+function RouteWarningsList({ warnings }: { warnings: RouteWarning[] }) {
+  if (warnings.length === 0) {
+    return <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">No warnings</p>
+  }
+  return (
+    <ul className="mt-1 space-y-1">
+      {warnings.map((warning, index) => (
+        <li
+          key={`${warning.type}-${index}`}
+          className="flex items-start gap-2 text-xs text-gray-600 dark:text-gray-300"
+        >
+          <span
+            className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${warningBadgeClass(warning.severity)}`}
+          >
+            {warning.severity}
+          </span>
+          <span>{warning.description}</span>
+        </li>
+      ))}
+    </ul>
+  )
 }
 
 export default function RoutesPage() {
@@ -230,12 +279,11 @@ export default function RoutesPage() {
                     </span>
                   </div>
                   <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    {route.warnings.length === 0
-                      ? 'No warnings'
-                      : `${route.warnings.length} warning(s)`}
+                    {formatDistanceDuration(route.distance_km, route.duration_min)}
                     {' · '}
                     {formatTime(route.created_at)}
                   </p>
+                  <RouteWarningsList warnings={route.warnings} />
                   <button
                     type="button"
                     onClick={() => void handleMarkComplete(route.route_plan_id)}
@@ -265,12 +313,11 @@ export default function RoutesPage() {
                     {route.origin_label} → {route.destination_label}
                   </span>
                   <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    {route.warnings.length === 0
-                      ? 'No warnings'
-                      : `${route.warnings.length} warning(s)`}
+                    {formatDistanceDuration(route.distance_km, route.duration_min)}
                     {' · completed '}
                     {formatTime(route.completed_at)}
                   </p>
+                  <RouteWarningsList warnings={route.warnings} />
                 </li>
               ))}
             </ul>

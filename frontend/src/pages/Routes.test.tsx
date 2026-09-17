@@ -121,6 +121,13 @@ describe('RoutesPage', () => {
     expect(screen.getByTestId('route-2')).toHaveTextContent('Sydney CBD → Bondi Beach')
     expect(screen.getByText('Active (1)')).toBeInTheDocument()
     expect(screen.getByText('Completed (1)')).toBeInTheDocument()
+
+    // distance/duration and per-warning severity/description now render
+    // (final review Fix 4) -- activeRoute carries a high-severity warning.
+    expect(screen.getByTestId('route-1')).toHaveTextContent('23.4 km · 38 min')
+    expect(screen.getByTestId('route-1')).toHaveTextContent('high')
+    expect(screen.getByTestId('route-1')).toHaveTextContent('x')
+    expect(screen.getByTestId('route-2')).toHaveTextContent('No warnings')
   })
 
   it('marks an active route complete via the Mark complete button', async () => {

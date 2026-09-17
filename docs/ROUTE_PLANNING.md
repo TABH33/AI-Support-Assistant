@@ -176,7 +176,8 @@ AI path in this codebase uses). Only called when `unavailable is False`.
 {
   "origin": "Sydney CBD",
   "destination": "Parramatta",
-  "waypoints": null
+  "waypoints": null,
+  "customer_id": null
 }
 ```
 
@@ -188,6 +189,7 @@ through the same endpoint.
 ```json
 // Response (success)
 {
+  "route_plan_id": 42,
   "distance_km": 24.14,
   "duration_min": 27.6,
   "geometry": { "type": "LineString", "coordinates": [[151.21, -33.87], ...] },
@@ -209,6 +211,7 @@ through the same endpoint.
 ```json
 // Response (failure -- always HTTP 200, never a 5xx)
 {
+  "route_plan_id": 43,
   "distance_km": null, "duration_min": null, "geometry": null, "warnings": [],
   "unavailable": true,
   "unavailable_reason": "geocoding_failed",
@@ -217,9 +220,14 @@ through the same endpoint.
 ```
 
 RBAC: `require_role("customer", "support_agent")` — the same gate every
-other route uses. No `customer_id` scoping on this endpoint's own logic,
-since route/weather/risk-zone data isn't customer-owned. Every call
-(success or failure) writes an `AuditLog` row
+other route uses. No `customer_id` scoping on the route *computation*
+itself — route/weather/risk-zone data isn't customer-owned — but the plan
+is also **persisted** as a `RoutePlan` row (see
+[Daily route tracking](#daily-route-tracking) below), and that save *is*
+customer-scoped: `customer_id` is ignored for a `customer` caller (the
+saved plan always uses their own id) and **required** (`400` if omitted)
+for a `support_agent`, since they have no fleet of their own to default
+to. Every call (success or failure) writes an `AuditLog` row
 (`action="route_plan_generated"`, noting origin/destination/outcome).
 
 ## Chat integration
@@ -329,6 +337,17 @@ Scoping:
 Rows are ordered newest-first. Full response shape:
 [API_REFERENCE.md](API_REFERENCE.md#get-route-plans).
 
+**Known limitation: "today" is the server's UTC calendar date, not the
+caller's local date.** Both `GET /route-plans` and the chat "today's
+routes" intent (below) filter on the server's UTC date with no timezone
+conversion. This app's demo data is Sydney/Australia (AEST/AEDT,
+UTC+10/+11), so a route planned at 7-10am local time falls on the
+*previous* UTC calendar day and won't show up as "today's" until the UTC
+date rolls over. This has been accepted as a known, deliberate limitation
+rather than fixed — timezone-aware windowing was ruled out of scope (added
+complexity, no configured per-deployment timezone to convert against) —
+not a bug to chase.
+
 ### `PATCH /route-plans/{id}/complete`
 
 Manually marks one `RoutePlan` as `status="completed"`, stamping
@@ -347,13 +366,16 @@ frontend page's "Mark complete" button.
 
 `app/api/chat.py`'s `_detect_todays_routes_intent` recognizes questions
 about routes **already** planned, rather than a request to plan a new one
-— e.g. "what routes were used today", "any risk signals for the routes
-today", "active routes". It requires both a route word
-(`route`/`routes`) **and** a temporal/status word
-(`today`/`active`/`risk`/`risks`) to fire, so an ordinary telematics
-question that merely mentions "risk" (e.g. "is harsh braking a risk for
-this driver?") doesn't get swallowed here. It's only checked when the
-route-plan intent (above) didn't match first.
+— e.g. "what routes were used today", "active routes", "route risks
+today". It requires both a route word (`route`/`routes`) **and** a
+temporal/status word (`today`/`active`) to fire. Bare `risk`/`risks` were
+deliberately dropped from the signal words (final review): this app has
+real domain vocabulary built on "risk" — `DrivingEventType.
+ROUTE_DEVIATION`, the seeded "Route deviation alerts explained" KB
+article — so an ordinary question like "are route deviations a risk to my
+fleet?" used to collide with this intent (it contains "route" + "risk")
+and get hijacked away from RAG. It's only checked when the route-plan
+intent (above) didn't match first.
 
 When it fires, `app/ai/route_planning.py`'s `summarize_todays_routes()`
 builds the answer **deterministically, with no LLM call**: fleet-wide for
