@@ -28,7 +28,7 @@ from app.ai.route_planning import (
 from app.auth.security import create_access_token, hash_password
 from app.database import get_db
 from app.main import app
-from app.models import AuditLog, Base, Customer
+from app.models import AuditLog, Base, Customer, RoutePlan
 from app.models.enums import PreferredNotificationMethod
 
 
@@ -240,3 +240,98 @@ def test_successful_plan_response_has_null_unavailable_fields(client, customer_h
     assert body["unavailable"] is False
     assert body["unavailable_reason"] is None
     assert body["unavailable_message"] is None
+
+
+# ---------------------------------------------------------------------------
+# Task 2: POST /route-plan persists a RoutePlan row and returns its id.
+# ---------------------------------------------------------------------------
+
+
+def test_successful_route_plan_is_persisted_and_returns_its_id(client, customer_headers, db_session):
+    result = RoutePlanResult(distance_km=23.4, duration_min=38.2, geometry=_GEOMETRY, warnings=[])
+    with patch("app.api.route_plan.build_route_plan", return_value=result):
+        response = client.post(
+            "/route-plan",
+            json={"origin": "Sydney CBD", "destination": "Parramatta"},
+            headers=customer_headers,
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body["route_plan_id"], int)
+
+    saved = db_session.get(RoutePlan, body["route_plan_id"])
+    assert saved is not None
+    assert saved.origin_label == "Sydney CBD"
+    assert saved.destination_label == "Parramatta"
+    assert saved.status.value == "active"
+    assert saved.created_by_role == "customer"
+
+
+def test_unavailable_route_plan_is_still_persisted(client, customer_headers, db_session):
+    result = RoutePlanResult(distance_km=None, duration_min=None, geometry=None, unavailable=True)
+    with patch("app.api.route_plan.build_route_plan", return_value=result):
+        response = client.post(
+            "/route-plan",
+            json={"origin": "Nowhere", "destination": "Parramatta"},
+            headers=customer_headers,
+        )
+
+    body = response.json()
+    saved = db_session.get(RoutePlan, body["route_plan_id"])
+    assert saved is not None
+    assert saved.unavailable is True
+
+
+def test_support_agent_must_supply_customer_id(client, db_session):
+    from app.auth.security import create_access_token
+
+    agent_token = create_access_token(subject=1, role="support_agent")
+    headers = {"Authorization": f"Bearer {agent_token}"}
+
+    result = RoutePlanResult(distance_km=5.0, duration_min=10.0, geometry=_GEOMETRY, warnings=[])
+    with patch("app.api.route_plan.build_route_plan", return_value=result):
+        response = client.post(
+            "/route-plan",
+            json={"origin": "Sydney CBD", "destination": "Parramatta"},
+            headers=headers,
+        )
+
+    assert response.status_code == 400
+    assert "customer_id" in response.json()["detail"]
+
+
+def test_support_agent_can_save_a_route_plan_for_a_named_customer(client, db_session):
+    from app.auth.security import create_access_token, hash_password
+    from app.models.enums import PreferredNotificationMethod
+
+    customer = Customer(
+        full_name="Agent-Scoped Customer",
+        email="agent-scoped-customer@example.test",
+        phone_number="+61000000002",
+        preferred_notification_method=PreferredNotificationMethod.EMAIL,
+        password_hash=hash_password("irrelevant-not-used-here"),
+    )
+    db_session.add(customer)
+    db_session.commit()
+    db_session.refresh(customer)
+
+    agent_token = create_access_token(subject=99, role="support_agent")
+    headers = {"Authorization": f"Bearer {agent_token}"}
+
+    result = RoutePlanResult(distance_km=5.0, duration_min=10.0, geometry=_GEOMETRY, warnings=[])
+    with patch("app.api.route_plan.build_route_plan", return_value=result):
+        response = client.post(
+            "/route-plan",
+            json={
+                "origin": "Sydney CBD",
+                "destination": "Parramatta",
+                "customer_id": customer.customer_id,
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    saved = db_session.get(RoutePlan, response.json()["route_plan_id"])
+    assert saved.customer_id == customer.customer_id
+    assert saved.created_by_role == "support_agent"

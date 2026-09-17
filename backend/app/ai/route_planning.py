@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -27,6 +28,8 @@ from app.integrations.openrouteservice import (
     geocode,
     get_directions,
 )
+from app.models.enums import RoutePlanStatus
+from app.models.route_plan import RoutePlan
 
 logger = logging.getLogger(__name__)
 
@@ -357,6 +360,56 @@ def build_route_plan(
         geometry=route.geometry,
         warnings=warnings,
     )
+
+
+def save_route_plan(
+    db: Session,
+    result: RoutePlanResult,
+    *,
+    customer_id: int,
+    created_by_role: str,
+    created_by_id: int,
+    origin_label: str,
+    destination_label: str,
+) -> RoutePlan:
+    """Persists `result` as a `RoutePlan` row so it can later be listed
+    (`GET /route-plans`) or summarized for the day it was created
+    (`summarize_todays_routes` below). Called from both `POST /route-plan`
+    and the chat route-plan intent (`app/api/chat.py`) so a route planned
+    through either surface is tracked identically -- including a failed
+    plan (`result.unavailable=True`), which is still worth recording (a
+    manager asking "any routes fail to plan today?" needs this).
+
+    Flushes, does not commit -- same single-transaction-per-request
+    convention as `record_audit_event` (see `app.security.audit`); the
+    caller owns `db.commit()`."""
+    route_plan = RoutePlan(
+        customer_id=customer_id,
+        created_by_role=created_by_role,
+        created_by_id=created_by_id,
+        origin_label=origin_label,
+        destination_label=destination_label,
+        distance_km=result.distance_km,
+        duration_min=result.duration_min,
+        geometry=result.geometry,
+        warnings=[
+            {
+                "location": {"lat": w.latitude, "lon": w.longitude},
+                "distance_from_origin_km": w.distance_from_origin_km,
+                "type": w.type,
+                "severity": w.severity,
+                "description": w.description,
+            }
+            for w in result.warnings
+        ],
+        unavailable=result.unavailable,
+        unavailable_reason=result.unavailable_reason,
+        status=RoutePlanStatus.ACTIVE,
+    )
+    db.add(route_plan)
+    db.flush()
+    db.refresh(route_plan)
+    return route_plan
 
 
 def build_route_summary_prompt(
