@@ -58,11 +58,12 @@ from app.models import (
     Customer,
     Device,
     Driver,
+    RoutePlan,
     SupportTicket,
     Trip,
     Vehicle,
 )
-from app.models.enums import BatteryStatus, DeviceStatus, PreferredNotificationMethod
+from app.models.enums import BatteryStatus, DeviceStatus, PreferredNotificationMethod, RoutePlanStatus
 from app.models.knowledge import KnowledgeBaseArticle
 
 _FAKE_EMBEDDING = [0.1] * 768
@@ -899,4 +900,114 @@ def test_support_agent_can_reuse_any_customers_session(client, db_session, fleet
         )
     assert response.status_code == 200
     assert response.json()["session_id"] == session_id
+
+
+# ---------------------------------------------------------------------------
+# Task 5: chat route-plan intent persists a RoutePlan; new "today's routes"
+# intent reports on them.
+# ---------------------------------------------------------------------------
+
+
+def test_route_plan_intent_persists_a_route_plan(client, db_session, fleet_a):
+    route_result = RoutePlanResult(
+        distance_km=23.4, duration_min=38.2, geometry={"type": "LineString", "coordinates": []}, warnings=[]
+    )
+    with (
+        patch("app.api.chat.build_route_plan", return_value=route_result),
+        patch("app.api.chat.summarize_route_plan", return_value="It's a 23.4km trip."),
+    ):
+        response = client.post(
+            "/chat",
+            json={
+                "query": "plan a trip from Sydney CBD to Parramatta",
+                "device_id": fleet_a["device"].device_id,
+            },
+            headers=fleet_a["headers"],
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body["route_plan"]["route_plan_id"], int)
+
+    saved = db_session.get(RoutePlan, body["route_plan"]["route_plan_id"])
+    assert saved is not None
+    assert saved.customer_id == fleet_a["customer"].customer_id
+    assert saved.origin_label == "Sydney CBD"
+
+
+def test_todays_routes_intent_reports_saved_routes(client, db_session, fleet_a):
+    route_plan = RoutePlan(
+        customer_id=fleet_a["customer"].customer_id,
+        created_by_role="customer",
+        created_by_id=fleet_a["customer"].customer_id,
+        origin_label="Sydney CBD",
+        destination_label="Parramatta",
+        warnings=[{"type": "risk_zone", "severity": "high", "description": "x"}],
+        unavailable=False,
+        status=RoutePlanStatus.ACTIVE,
+    )
+    db_session.add(route_plan)
+    db_session.commit()
+
+    with patch("app.ai.chat_service.chat_completion") as mock_chat:
+        response = client.post(
+            "/chat",
+            json={"query": "what routes were used today?", "device_id": fleet_a["device"].device_id},
+            headers=fleet_a["headers"],
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["confidence"] == 1.0
+    assert body["escalated"] is False
+    assert "Sydney CBD -> Parramatta" in body["answer"]
+    assert "1 high-severity" in body["answer"]
+    mock_chat.assert_not_called()
+
+
+def test_todays_routes_intent_is_fleet_wide_for_support_agent(client, db_session, fleet_a, fleet_b):
+    for fleet in (fleet_a, fleet_b):
+        db_session.add(
+            RoutePlan(
+                customer_id=fleet["customer"].customer_id,
+                created_by_role="customer",
+                created_by_id=fleet["customer"].customer_id,
+                origin_label="Sydney CBD",
+                destination_label="Parramatta",
+                warnings=[],
+                unavailable=False,
+            )
+        )
+    db_session.commit()
+
+    from app.auth.security import create_access_token
+
+    agent_token = create_access_token(subject=1, role="support_agent")
+    with patch("app.ai.chat_service.chat_completion"):
+        response = client.post(
+            "/chat",
+            json={
+                "query": "any active routes today?",
+                "device_id": fleet_a["device"].device_id,
+                "customer_id": fleet_a["customer"].customer_id,
+            },
+            headers={"Authorization": f"Bearer {agent_token}"},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "2 route(s) planned today" in body["answer"]
+
+
+def test_todays_routes_intent_reports_no_routes_when_none_planned(client, fleet_a):
+    with patch("app.ai.chat_service.chat_completion") as mock_chat:
+        response = client.post(
+            "/chat",
+            json={"query": "what routes were used today?", "device_id": fleet_a["device"].device_id},
+            headers=fleet_a["headers"],
+        )
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == "No routes have been planned today."
+    mock_chat.assert_not_called()
     assert response.json()["escalated"] is False

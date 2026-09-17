@@ -50,7 +50,9 @@ from app.ai.route_planning import (
     ROUTE_DATA_UNAVAILABLE_TEXT,
     RoutePlanResult,
     build_route_plan,
+    save_route_plan,
     summarize_route_plan,
+    summarize_todays_routes,
 )
 from app.api.route_plan import RoutePlanResponse, route_plan_result_to_response
 from app.auth.dependencies import CurrentUser, require_role
@@ -277,6 +279,31 @@ def _detect_route_plan_intent(query: str) -> RoutePlanIntent | None:
 
 
 # ---------------------------------------------------------------------------
+# "Today's routes" intent routing
+# ---------------------------------------------------------------------------
+
+# Requires BOTH a route-word and a temporal/status word, so an ordinary
+# telematics question that happens to mention "risk" (e.g. "is harsh
+# braking a risk for this driver?") doesn't get swallowed here -- and so
+# this doesn't collide with _detect_route_plan_intent's "plan a NEW route"
+# phrasing, which is checked first (see post_chat below).
+_TODAYS_ROUTES_ROUTE_WORDS = ("route", "routes")
+_TODAYS_ROUTES_SIGNAL_WORDS = ("today", "active", "risk", "risks")
+
+
+def _detect_todays_routes_intent(query: str) -> bool:
+    """True if the query is asking about already-planned routes (e.g.
+    "what routes were used today", "any risk signals for the routes
+    today", "active routes") rather than asking to plan a NEW route.
+    Deliberately simple keyword matching, same philosophy as
+    _detect_report_intent/_detect_route_plan_intent."""
+    lowered = query.lower()
+    has_route_word = any(word in lowered for word in _TODAYS_ROUTES_ROUTE_WORDS)
+    has_signal_word = any(word in lowered for word in _TODAYS_ROUTES_SIGNAL_WORDS)
+    return has_route_word and has_signal_word
+
+
+# ---------------------------------------------------------------------------
 # Report-intent routing
 # ---------------------------------------------------------------------------
 
@@ -331,8 +358,16 @@ def post_chat(
     customer_id = chat_session.customer_id
 
     route_plan_intent = _detect_route_plan_intent(payload.query)
-    report_intent = _detect_report_intent(payload.query) if route_plan_intent is None else None
+    todays_routes_intent = (
+        _detect_todays_routes_intent(payload.query) if route_plan_intent is None else False
+    )
+    report_intent = (
+        _detect_report_intent(payload.query)
+        if route_plan_intent is None and not todays_routes_intent
+        else None
+    )
     route_plan_payload: RoutePlanResult | None = None
+    saved_route_plan_id: int | None = None
 
     if route_plan_intent is not None:
         # Route-plan requests bypass RAG/escalation entirely, same "always
@@ -344,6 +379,16 @@ def post_chat(
             route_result = build_route_plan(
                 route_plan_intent.origin, route_plan_intent.destination, db=db
             )
+            saved_route_plan = save_route_plan(
+                db,
+                route_result,
+                customer_id=customer_id,
+                created_by_role=current_user.role,
+                created_by_id=current_user.user_id,
+                origin_label=route_plan_intent.origin,
+                destination_label=route_plan_intent.destination,
+            )
+            saved_route_plan_id = saved_route_plan.route_plan_id
             if route_result.unavailable:
                 # Final-review Fix 5: prefer the failure-specific message
                 # (e.g. "I couldn't find a location matching 'Parramattaa'")
@@ -355,6 +400,17 @@ def post_chat(
                     route_result, route_plan_intent.origin, route_plan_intent.destination
                 )
                 route_plan_payload = route_result
+        confidence = 1.0
+        escalated = False
+        audit_action = ACTION_ROUTE_PLAN_GENERATED
+    elif todays_routes_intent:
+        # Fleet-wide for a support_agent (ignores this session's own
+        # customer_id -- a support_agent has no fleet of their own, same
+        # convention as GET /route-plans and GET /tickets), scoped to the
+        # caller's own fleet for a customer.
+        answer_text = summarize_todays_routes(
+            db, customer_id=customer_id if current_user.role == "customer" else None
+        )
         confidence = 1.0
         escalated = False
         audit_action = ACTION_ROUTE_PLAN_GENERATED
@@ -443,7 +499,11 @@ def post_chat(
         answer=answer_text,
         confidence=confidence,
         escalated=escalated,
-        route_plan=route_plan_result_to_response(route_plan_payload) if route_plan_payload else None,
+        route_plan=(
+            route_plan_result_to_response(route_plan_payload, route_plan_id=saved_route_plan_id)
+            if route_plan_payload is not None
+            else None
+        ),
     )
 
 

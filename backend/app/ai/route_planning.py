@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
+from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -457,3 +458,50 @@ def summarize_route_plan(
     callers must check that first."""
     messages = build_route_summary_prompt(route_plan, origin_label, destination_label)
     return chat_completion(messages)
+
+
+def summarize_todays_routes(db: Session, *, customer_id: int | None) -> str:
+    """Deterministic (no LLM call) summary of today's RoutePlan rows, for
+    the chat "today's routes" intent (app/api/chat.py's
+    _detect_todays_routes_intent). customer_id=None means fleet-wide (a
+    support_agent asking without narrowing to one customer) -- mirrors
+    every other support_agent-facing list endpoint's unscoped-means-all
+    convention (see GET /route-plans, GET /tickets).
+
+    Deliberately does NOT call the LLM: the numbers here (warning counts,
+    severities) come straight from stored RoutePlan rows, and rewriting
+    them through an LLM risks exactly the kind of drift/hallucination this
+    app's RAG pipeline already guards against elsewhere (see
+    app/ai/chat_service.py's strict "answer only from context" system
+    prompt)."""
+    today = datetime.now(timezone.utc).date()
+    query = db.query(RoutePlan).filter(func.date(RoutePlan.created_at) == today)
+    if customer_id is not None:
+        query = query.filter(RoutePlan.customer_id == customer_id)
+    routes = query.order_by(RoutePlan.created_at.desc()).all()
+
+    if not routes:
+        return "No routes have been planned today."
+
+    active_count = sum(1 for r in routes if r.status == RoutePlanStatus.ACTIVE)
+    completed_count = len(routes) - active_count
+
+    lines = [
+        f"{len(routes)} route(s) planned today "
+        f"({active_count} active, {completed_count} completed)."
+    ]
+    for route in routes:
+        status_label = "active" if route.status == RoutePlanStatus.ACTIVE else "completed"
+        detail = f"- {route.origin_label} -> {route.destination_label} ({status_label})"
+        if route.unavailable:
+            detail += ": route data was unavailable when planned"
+        elif route.warnings:
+            high_severity = sum(1 for w in route.warnings if w.get("severity") == "high")
+            detail += f": {len(route.warnings)} warning(s)"
+            if high_severity:
+                detail += f", {high_severity} high-severity"
+        else:
+            detail += ": no warnings"
+        lines.append(detail)
+
+    return "\n".join(lines)
