@@ -224,9 +224,18 @@ since route/weather/risk-zone data isn't customer-owned. Every call
 
 ## Chat integration
 
-`app/api/chat.py`'s `_detect_route_plan_intent` runs a regex check on the
-query, **before** the existing report-intent check (route-plan phrasings
-are more specific):
+`app/api/chat.py` checks three chat intents against the query, in order,
+each only evaluated if the previous one didn't match:
+
+1. **`_detect_route_plan_intent`** (this section) — a request to plan a
+   **new** route. Checked first since its keyword set is the most
+   specific.
+2. **`_detect_todays_routes_intent`** — a request about routes **already**
+   planned (e.g. "what routes were used today", "active routes"). See
+   [Daily route tracking](#daily-route-tracking) below.
+3. The existing report-intent check (see [RAG_PIPELINE.md](RAG_PIPELINE.md)).
+
+`_detect_route_plan_intent` runs a regex check on the query:
 
 - `"plan a trip from X to Y"`, `"route from X to Y"`, `"directions from X
   to Y"` → both origin and destination captured.
@@ -268,7 +277,117 @@ A failed route plan (`unavailable=True`) shows the specific
 way a low-confidence RAG answer does, since an ORS outage or a typo is an
 infrastructure/input problem, not a knowledge gap.
 
+## Daily route tracking
+
+Every computed route — whether from `POST /route-plan` or the chat
+route-plan intent — is persisted as a `RoutePlan` row
+(`app/models/route_plan.py`), not just returned and discarded. This is
+what lets a manager later ask "what routes were planned today, and did any
+carry risk warnings?" Full column list: [DATA_MODEL.md](DATA_MODEL.md).
+
+### Saving (`save_route_plan`)
+
+`app/ai/route_planning.py`'s `save_route_plan()` is called from both entry
+points, right after `build_route_plan()` returns:
+
+- **`POST /route-plan`** (`app/api/route_plan.py`) — `customer_id`
+  resolution mirrors `POST /reports/*`'s `ReportRequest` exactly: ignored
+  for a `customer` caller (always their own JWT-derived id), **required**
+  (`400` if omitted) for a `support_agent` caller.
+- **The chat route-plan intent** (`app/api/chat.py`) — `customer_id` comes
+  from the resolved `ChatSession.customer_id`, the same tenant-scoping rule
+  `POST /chat` already applies everywhere else.
+
+A route is saved **even when `unavailable=true`** (a geocoding failure or a
+service outage) — a manager asking "did any routes fail to plan today?"
+needs failed attempts recorded too, not just successful ones. Every new row
+starts `status="active"`.
+
+**Persistence tenancy is stricter than computation tenancy** — see
+[SECURITY.md](SECURITY.md#route-computation-vs-route-plan-persistence):
+anyone can compute a route anywhere, but a saved plan is always
+customer-scoped.
+
+### `GET /route-plans`
+
+Lists saved `RoutePlan` rows for a single day (default: today, UTC).
+
+| Query param | Meaning |
+|---|---|
+| `date` | ISO date, defaults to today (UTC) |
+| `status` | `active` / `completed`; unfiltered if omitted |
+| `customer_id` | `support_agent` only — narrows to one customer; ignored for a `customer` caller |
+
+Scoping:
+
+| Caller | Sees |
+|---|---|
+| `customer` | Only their own `customer_id`'s rows for that day, regardless of any `?customer_id=` passed |
+| `support_agent`, no `?customer_id=` | Every customer's rows for that day |
+| `support_agent`, with `?customer_id=` | Just that customer's rows |
+
+Rows are ordered newest-first. Full response shape:
+[API_REFERENCE.md](API_REFERENCE.md#get-route-plans).
+
+### `PATCH /route-plans/{id}/complete`
+
+Manually marks one `RoutePlan` as `status="completed"`, stamping
+`completed_at`. Completion is **manual-only** — there's no automatic
+trip-tracking integration that ties a `RoutePlan` back to a `Trip` yet; a
+driver or dispatcher marks it done themselves, from the `Routes.tsx`
+frontend page's "Mark complete" button.
+
+- `404` if the row doesn't exist, or exists but belongs to a different
+  customer for a `customer` caller — same "never reveal it's not yours"
+  rule as everywhere else in this API.
+- `409` if it's already `completed` — completion isn't idempotent;
+  retrying a duplicate PATCH is a client bug, not a no-op.
+
+### Chat: "today's routes" intent
+
+`app/api/chat.py`'s `_detect_todays_routes_intent` recognizes questions
+about routes **already** planned, rather than a request to plan a new one
+— e.g. "what routes were used today", "any risk signals for the routes
+today", "active routes". It requires both a route word
+(`route`/`routes`) **and** a temporal/status word
+(`today`/`active`/`risk`/`risks`) to fire, so an ordinary telematics
+question that merely mentions "risk" (e.g. "is harsh braking a risk for
+this driver?") doesn't get swallowed here. It's only checked when the
+route-plan intent (above) didn't match first.
+
+When it fires, `app/ai/route_planning.py`'s `summarize_todays_routes()`
+builds the answer **deterministically, with no LLM call**: fleet-wide for
+a `support_agent` (ignoring this session's own `customer_id` — a support
+agent has no fleet of their own, same unscoped-means-all convention as
+`GET /route-plans`), or scoped to the caller's own fleet for a `customer`.
+Skipping the LLM here is deliberate — the warning counts and severities in
+the summary come straight from the stored `RoutePlan` rows, and rewriting
+them through an LLM risks exactly the hallucination/drift the RAG
+pipeline's own "answer only from context" system prompt already guards
+against elsewhere.
+
+If no routes were planned that day, the answer is the fixed string `"No
+routes have been planned today."`. Otherwise it opens with a count (`"N
+route(s) planned today (X active, Y completed)."`) followed by one line per
+route naming origin/destination and status, and either "route data was
+unavailable when planned" or a warning count (with a high-severity
+call-out when any warning is `severity="high"`).
+
+Like the route-plan intent, this bypasses RAG/escalation entirely, always
+returns `confidence: 1.0, escalated: false`, and writes the same
+`route_plan_generated` audit action as a route-plan turn. `ChatResponse.route_plan`
+stays `null` on this turn — there's no single route to render inline,
+unlike a successful route-plan turn.
+
 ## Frontend
+
+`frontend/src/pages/Routes.tsx` is the route-selector + daily-tracking
+page: a form that calls `POST /route-plan` (reusing `RouteMap` below to
+render a successful plan), plus an active/completed list backed by
+`GET /route-plans` with a "Mark complete" button per active row
+(`PATCH /route-plans/{id}/complete`). A `support_agent` additionally gets a
+customer-ID field on the plan form and a customer-ID filter on the list,
+matching the backend's scoping rules above.
 
 `frontend/src/components/RouteMap.tsx` renders the route as a Leaflet
 polyline over OpenStreetMap tiles (no API key needed for the tiles), with a

@@ -94,6 +94,32 @@ exception exists for exactly one reason (an aggregate, identity-free,
 cross-fleet signal) and shouldn't be copied without the same reasoning
 applying.
 
+### Route computation vs. route-plan persistence
+
+The exception above is about *computing* a route — it says nothing about
+*saving* one. [Daily route tracking](ROUTE_PLANNING.md#daily-route-tracking)
+persists every computed route as a `RoutePlan` row, and that table is
+scoped exactly like `SupportTicket`/`Notification`, **not** like the
+risk-zone exception it sits next to:
+
+- A `customer`-role caller's saved plans are always their own —
+  `POST /route-plan` and the chat route-plan intent both force
+  `RoutePlan.customer_id` to `current_user.user_id` for that role, and
+  `GET /route-plans`/`PATCH /route-plans/{id}/complete` both filter (or
+  404) on it.
+- A `support_agent`-role caller must name an explicit `customer_id` to save
+  a plan — `POST /route-plan` returns `400` without one, since a support
+  agent has no fleet of their own to default to — and sees every
+  customer's saved plans by default when listing (`GET /route-plans` with
+  no `?customer_id=` filter), the same unscoped-means-all convention as
+  `GET /tickets`/`GET /notifications`.
+
+So this one feature has two different tenancy rules for two different
+things: *anyone* can compute a route anywhere (the risk-zone lookup feeding
+it is deliberately pooled across every customer, per above), but *whose
+daily record it becomes* is strictly customer-scoped the moment it's
+saved.
+
 ## At-rest PII encryption
 
 `Customer.full_name`, `Customer.email`, and `Customer.phone_number` are

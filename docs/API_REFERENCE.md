@@ -210,21 +210,29 @@ Full detail (algorithm, warning thresholds, known limitations): [ROUTE_PLANNING.
 ### `POST /route-plan`
 
 Requires `require_role("customer", "support_agent")`. No `customer_id`
-scoping — route/weather/risk-zone data isn't customer-owned.
+scoping on the route *computation* itself — route/weather/risk-zone data
+isn't customer-owned — but the plan is also **persisted** as a `RoutePlan`
+row (see [Daily route tracking](ROUTE_PLANNING.md#daily-route-tracking)),
+and that save *is* customer-scoped: see `customer_id` below.
 
 **Request** (`RoutePlanRequest`)
 ```json
-{ "origin": "Sydney CBD", "destination": "Parramatta", "waypoints": null }
+{ "origin": "Sydney CBD", "destination": "Parramatta", "waypoints": null, "customer_id": null }
 ```
-`origin`/`destination`/each `waypoints` entry accept either a place-name
-string (geocoded server-side via OpenRouteService) or
-`{"lat": ..., "lon": ...}`.
+- `origin`/`destination`/each `waypoints` entry accept either a place-name
+  string (geocoded server-side via OpenRouteService) or
+  `{"lat": ..., "lon": ...}`.
+- `customer_id` — same convention as `POST /reports/*`'s `ReportRequest`:
+  ignored for a `customer`-role caller (the saved plan always uses
+  `current_user.user_id`); **required** (`400` if omitted) for a
+  `support_agent`, since they have no fleet of their own to default to.
 
 **Response** (`RoutePlanResponse`) `200` — **always 200**, even on failure;
 failures are reported in-band via `unavailable`/`unavailable_reason`, never
 a 5xx:
 ```json
 {
+  "route_plan_id": 42,
   "distance_km": 24.14,
   "duration_min": 27.6,
   "geometry": { "type": "LineString", "coordinates": [[151.21, -33.87], ...] },
@@ -242,6 +250,8 @@ a 5xx:
   "unavailable_message": null
 }
 ```
+`route_plan_id` identifies the saved `RoutePlan` row (present on every
+response, success or failure — a failed plan is saved too).
 
 On failure, `distance_km`/`duration_min`/`geometry` are `null`, `warnings`
 is `[]`, `unavailable` is `true`, and `unavailable_reason` is one of:
@@ -253,3 +263,62 @@ is `[]`, `unavailable` is `true`, and `unavailable_reason` is one of:
 
 Every call (success or failure) is written to `audit_logs`
 (`action=route_plan_generated`), noting origin/destination and the outcome.
+
+### `GET /route-plans`
+
+Requires `require_role("customer", "support_agent")`. Lists saved
+`RoutePlan` rows for a single day.
+
+**Query params**
+
+| Param | Meaning |
+|---|---|
+| `date` | ISO date, defaults to today (UTC) |
+| `status` | `active` / `completed`; unfiltered if omitted |
+| `customer_id` | `support_agent` only — narrows to one customer; ignored for a `customer` caller |
+
+**Response** (`list[RoutePlanListItem]`) `200`
+```json
+[
+  {
+    "route_plan_id": 42,
+    "customer_id": 1,
+    "origin_label": "Sydney CBD",
+    "destination_label": "Parramatta",
+    "distance_km": 24.14,
+    "duration_min": 27.6,
+    "geometry": { "type": "LineString", "coordinates": [[151.21, -33.87], ...] },
+    "warnings": [ /* same shape as POST /route-plan's warnings */ ],
+    "unavailable": false,
+    "unavailable_reason": null,
+    "status": "active",
+    "created_at": "2026-09-18T09:15:00+00:00",
+    "completed_at": null
+  }
+]
+```
+Ordered newest-first (`created_at` descending).
+
+Scoping:
+
+| Caller | Sees |
+|---|---|
+| `customer` | Only their own `customer_id`'s rows for that day, regardless of any `?customer_id=` passed |
+| `support_agent`, no `?customer_id=` | Every customer's rows for that day |
+| `support_agent`, with `?customer_id=` | Just that customer's rows |
+
+### `PATCH /route-plans/{route_plan_id}/complete`
+
+Requires `require_role("customer", "support_agent")`. No request body.
+Manually marks one `RoutePlan` as `status="completed"`, stamping
+`completed_at` — there's no automatic completion.
+
+**Response** (`RoutePlanCompleteResponse`) `200`
+```json
+{ "route_plan_id": 42, "status": "completed", "completed_at": "2026-09-18T10:02:00+00:00" }
+```
+
+| Status | Cause |
+|---|---|
+| `404` | The row doesn't exist, or exists but belongs to a different customer for a `customer` caller — same "never reveal it's not yours" rule as everywhere else in this API |
+| `409` | The row is already `status="completed"` — completion isn't idempotent |

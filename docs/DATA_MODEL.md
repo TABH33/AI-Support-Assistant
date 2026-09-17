@@ -1,6 +1,6 @@
 # Data Model
 
-13 SQLAlchemy entities (`backend/app/models/`), migrated with Alembic
+14 SQLAlchemy entities (`backend/app/models/`), migrated with Alembic
 (`backend/alembic/`). All primary keys are auto-incrementing integers named
 `<entity>_id`. All enum columns are Python `str` `Enum` subclasses
 (`app/models/enums.py`), stored as their lowercase `.value` in Postgres.
@@ -14,6 +14,7 @@ erDiagram
     CUSTOMER ||--o{ VEHICLE : "has fleet"
     CUSTOMER ||--o{ CHAT_SESSION : starts
     CUSTOMER ||--o{ SUPPORT_TICKET : raises
+    CUSTOMER ||--o{ ROUTE_PLAN : plans
     DEVICE ||--o{ CHAT_SESSION : "context for"
     DEVICE ||--o{ SUPPORT_TICKET : "context for"
     DRIVER ||--o{ TRIP : drives
@@ -210,6 +211,33 @@ this is shared/global content.
 | `category` | string(128), nullable | |
 | `embedding` | `vector(768)`, nullable | pgvector column; null until indexed, dimension matches `nomic-embed-text` |
 | `created_at` / `updated_at` | timestamptz | |
+
+### RoutePlan
+
+A route computed via the [route-planning feature](ROUTE_PLANNING.md) and
+saved as a daily tracking record — either from the route-selector page
+(`POST /route-plan`) or the chat route-plan intent (`POST /chat`). Read
+back by `GET /route-plans` and summarized (without an LLM call) by the chat
+"today's routes" intent. **Not the same thing as `AuditLog`'s
+`route_plan_generated` entries** — those are a free-text compliance trail;
+this table is the structured, queryable record of the day's planned
+routes.
+
+| Field | Type | Notes |
+|---|---|---|
+| `route_plan_id` | int, PK | |
+| `customer_id` | int, FK → Customer | the plan's owner; always set, even when a `support_agent` planned it on the customer's behalf |
+| `created_by_role` | string(32) | `"customer"` / `"support_agent"` — who actually submitted the plan, same free-string convention as `AuditLog.actor_role` |
+| `created_by_id` | int | the submitting user's id; differs from `customer_id` when a `support_agent` plans on a customer's behalf |
+| `origin_label` / `destination_label` | string(255) | display labels — the place name, or `"{lat},{lon}"` when raw coordinates were given |
+| `distance_km` / `duration_min` | numeric(10,2), nullable | `null` when `unavailable=true` |
+| `geometry` | JSON, nullable | GeoJSON `LineString`; `null` when `unavailable=true` |
+| `warnings` | JSON | list of `{location, distance_from_origin_km, type, severity, description}` dicts, same shape as [ROUTE_PLANNING.md](ROUTE_PLANNING.md)'s warning objects; stored as JSON rather than a child table since these are never queried/filtered individually |
+| `unavailable` | bool | whether the route computation failed, default `false` |
+| `unavailable_reason` | string(32), nullable | `"geocoding_failed"` / `"service_unavailable"` — see [ROUTE_PLANNING.md](ROUTE_PLANNING.md); `null` on success |
+| `status` | enum | `active` / `completed`, default `active` — moves to `completed` only via `PATCH /route-plans/{id}/complete` (manual, never automatic) |
+| `created_at` | timestamptz | |
+| `completed_at` | timestamptz, nullable | set only when `status` transitions to `completed` |
 
 ### AuditLog
 
