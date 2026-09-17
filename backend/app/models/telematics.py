@@ -129,6 +129,14 @@ class DrivingEvent(Base):
     )
     event_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     location: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Nullable: no coordinate source exists for historical rows, and this
+    # POC's seed generator is the only writer today (see
+    # app/seed/generator.py's DEMO_CORRIDORS / _point_along_corridor). Added
+    # specifically to support radius-based "risk zone" lookups
+    # (TelematicsDataSource.get_driving_events_near) for the route-planning
+    # feature -- see docs/superpowers/specs/2026-08-26-route-planning-warnings-design.md.
+    latitude: Mapped[float | None] = mapped_column(nullable=True)
+    longitude: Mapped[float | None] = mapped_column(nullable=True)
     details: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)

@@ -116,7 +116,8 @@ A discrete event detected within a trip.
 | `trip_id` | int, FK → Trip | |
 | `event_type` | enum | `speeding` / `harsh_braking` / `idling` / `route_deviation` |
 | `event_time` | timestamptz | |
-| `location` | string, nullable | |
+| `location` | string, nullable | free-text label (e.g. "Main Rd") — not a coordinate |
+| `latitude`, `longitude` | float, nullable | added by the [route-planning feature](ROUTE_PLANNING.md); nullable because no coordinate source existed before it. Populated for synthetic seed data via `app/seed/generator.py`'s `DEMO_CORRIDORS`; real-world rows have no writer for these columns yet |
 | `details` | string(1024), nullable | |
 | `created_at` | timestamptz | |
 

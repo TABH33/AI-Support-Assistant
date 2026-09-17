@@ -589,3 +589,85 @@ def test_list_trips_for_customer_with_customer_id_isolates_other_customer(sessio
 
     assert [t.trip_id for t in trips_a] == [fleet_a["trip"].trip_id]
     assert [t.trip_id for t in trips_b] == [fleet_b["trip"].trip_id]
+
+
+# ---------------------------------------------------------------------------
+# get_driving_events_near (Task 5) -- deliberately NOT customer_id scoped, a
+# "risk zone" pools driving events across the whole synthetic fleet.
+# ---------------------------------------------------------------------------
+
+
+def test_get_driving_events_near_returns_events_within_radius(session, data_source):
+    fleet = _make_fleet(session, "R1")
+    trip = fleet["trip"]
+
+    near = DrivingEvent(
+        trip_id=trip.trip_id,
+        event_type=DrivingEventType.HARSH_BRAKING,
+        event_time=datetime.now(timezone.utc),
+        latitude=-33.8688,
+        longitude=151.2093,
+    )
+    # ~1.1km north -- just outside a 1.0km radius.
+    far = DrivingEvent(
+        trip_id=trip.trip_id,
+        event_type=DrivingEventType.SPEEDING,
+        event_time=datetime.now(timezone.utc),
+        latitude=-33.8588,
+        longitude=151.2093,
+    )
+    session.add_all([near, far])
+    session.commit()
+
+    results = data_source.get_driving_events_near(-33.8688, 151.2093, radius_km=1.0)
+
+    result_ids = {event.driving_event_id for event in results}
+    assert near.driving_event_id in result_ids
+    assert far.driving_event_id not in result_ids
+
+
+def test_get_driving_events_near_ignores_events_without_coordinates(session, data_source):
+    fleet = _make_fleet(session, "R2")
+    trip = fleet["trip"]
+
+    event = DrivingEvent(
+        trip_id=trip.trip_id,
+        event_type=DrivingEventType.IDLING,
+        event_time=datetime.now(timezone.utc),
+        latitude=None,
+        longitude=None,
+    )
+    session.add(event)
+    session.commit()
+
+    results = data_source.get_driving_events_near(-33.8688, 151.2093, radius_km=50.0)
+
+    assert event.driving_event_id not in {e.driving_event_id for e in results}
+
+
+def test_get_driving_events_near_pools_across_customers(session, data_source):
+    fleet_a = _make_fleet(session, "R3A")
+    fleet_b = _make_fleet(session, "R3B")
+
+    event_a = DrivingEvent(
+        trip_id=fleet_a["trip"].trip_id,
+        event_type=DrivingEventType.HARSH_BRAKING,
+        event_time=datetime.now(timezone.utc),
+        latitude=-33.8688,
+        longitude=151.2093,
+    )
+    event_b = DrivingEvent(
+        trip_id=fleet_b["trip"].trip_id,
+        event_type=DrivingEventType.SPEEDING,
+        event_time=datetime.now(timezone.utc),
+        latitude=-33.8689,
+        longitude=151.2094,
+    )
+    session.add_all([event_a, event_b])
+    session.commit()
+
+    results = data_source.get_driving_events_near(-33.8688, 151.2093, radius_km=1.0)
+
+    result_ids = {event.driving_event_id for event in results}
+    assert event_a.driving_event_id in result_ids
+    assert event_b.driving_event_id in result_ids

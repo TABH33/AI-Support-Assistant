@@ -43,6 +43,15 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       SESSION_TIMEOUT_MINUTES: ${SESSION_TIMEOUT_MINUTES}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      # Route-planning feature (OpenRouteService directions + geocoding).
+      # Optional: an empty/absent value is treated as "not configured" by
+      # app/integrations/openrouteservice.py, which degrades POST /route-plan
+      # and the chat route-plan intent to "route data unavailable" rather
+      # than erroring. This service enumerates every env var explicitly (no
+      # env_file:), so a var missing HERE never reaches the container even
+      # when it is set in the host .env -- keep this list in sync with
+      # backend/.env.example.
+      ORS_API_KEY: ${ORS_API_KEY:-}
     ports:
       - "8000:8000"
     depends_on:

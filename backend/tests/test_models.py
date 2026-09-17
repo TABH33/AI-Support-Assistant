@@ -325,6 +325,88 @@ def test_driver_trip_vehicle_and_driving_events(session):
         assert e.trip.trip_id == trip.trip_id
 
 
+def test_driving_event_latitude_longitude_round_trip(session):
+    customer = Customer(
+        full_name="Geo Test Customer",
+        email="geo-test@example.test",
+        phone_number="+61000000005",
+        preferred_notification_method=PreferredNotificationMethod.EMAIL,
+        password_hash="hashed",
+    )
+    session.add(customer)
+    session.flush()
+
+    driver = Driver(
+        customer_id=customer.customer_id, full_name="Geo Driver", license_number="LIC-200"
+    )
+    vehicle = Vehicle(
+        customer_id=customer.customer_id,
+        registration_number="REG-200",
+        make="Toyota",
+        model="Hilux",
+        year=2022,
+    )
+    session.add_all([driver, vehicle])
+    session.flush()
+
+    trip = Trip(driver_id=driver.driver_id, vehicle_id=vehicle.vehicle_id, start_time=_now())
+    session.add(trip)
+    session.flush()
+
+    event = DrivingEvent(
+        trip_id=trip.trip_id,
+        event_type=DrivingEventType.HARSH_BRAKING,
+        event_time=_now(),
+        latitude=-33.8688,
+        longitude=151.2093,
+    )
+    session.add(event)
+    session.commit()
+    session.refresh(event)
+
+    assert event.latitude == pytest.approx(-33.8688)
+    assert event.longitude == pytest.approx(151.2093)
+
+
+def test_driving_event_latitude_longitude_default_to_none(session):
+    customer = Customer(
+        full_name="Geo Test Customer 2",
+        email="geo-test-2@example.test",
+        phone_number="+61000000006",
+        preferred_notification_method=PreferredNotificationMethod.EMAIL,
+        password_hash="hashed",
+    )
+    session.add(customer)
+    session.flush()
+
+    driver = Driver(
+        customer_id=customer.customer_id, full_name="Geo Driver 2", license_number="LIC-201"
+    )
+    vehicle = Vehicle(
+        customer_id=customer.customer_id,
+        registration_number="REG-201",
+        make="Ford",
+        model="Ranger",
+        year=2021,
+    )
+    session.add_all([driver, vehicle])
+    session.flush()
+
+    trip = Trip(driver_id=driver.driver_id, vehicle_id=vehicle.vehicle_id, start_time=_now())
+    session.add(trip)
+    session.flush()
+
+    event = DrivingEvent(
+        trip_id=trip.trip_id, event_type=DrivingEventType.SPEEDING, event_time=_now()
+    )
+    session.add(event)
+    session.commit()
+    session.refresh(event)
+
+    assert event.latitude is None
+    assert event.longitude is None
+
+
 def test_customer_one_to_many_driver_and_vehicle_fleet_isolation(session):
     """Customer 1 -> Many Driver and Customer 1 -> Many Vehicle (fleet isolation FKs
     added after Task 7 hit a real per-customer-fleet-isolation requirement -- see

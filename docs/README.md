@@ -19,6 +19,7 @@ based on the three source reports in the repo root:
 | [DATA_MODEL.md](DATA_MODEL.md) | All 13 database entities, their fields, relationships, and the ER diagram |
 | [API_REFERENCE.md](API_REFERENCE.md) | Every HTTP endpoint: method, path, auth, request/response shape |
 | [RAG_PIPELINE.md](RAG_PIPELINE.md) | How chat questions are answered — retrieval, confidence scoring, escalation, reports |
+| [ROUTE_PLANNING.md](ROUTE_PLANNING.md) | Route computation, weather + historical-risk-zone warnings, and the chat intent that surfaces them |
 | [SECURITY.md](SECURITY.md) | Auth, multi-tenant isolation, PII encryption, audit logging |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Running the stack with Docker Compose, environment variables, troubleshooting |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Local dev workflow, running tests, project layout, known limitations |

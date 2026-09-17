@@ -14,6 +14,8 @@
  *   - `driver_id`/`trip_id`/`vehicle_id`/`device_id`/`customer_id`: all
  *     optional (`int | None = None` on the backend).
  */
+import type { RoutePlanResult } from './routePlan'
+
 export interface ChatRequest {
   session_id?: number | null
   query: string
@@ -33,6 +35,10 @@ export interface ChatResponse {
   answer: string
   confidence: number
   escalated: boolean
+  /** Structured route data -- only present when this turn answered a
+   * route-plan chat intent successfully (route-planning + warnings
+   * feature). See backend/app/api/chat.py's ChatResponse. */
+  route_plan?: RoutePlanResult | null
 }
 
 /**

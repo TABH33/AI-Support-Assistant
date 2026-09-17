@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     encryption_key: str
     session_timeout_minutes: int
     escalation_confidence_threshold: float = 0.6
+    # OpenRouteService API key for the route-planning feature (directions +
+    # geocoding, app/integrations/openrouteservice.py). Defaults to "" (not
+    # a required field) so importing app.config never breaks for code paths
+    # that don't touch route-planning -- every existing test in this suite
+    # imports app.config transitively and doesn't set this. A caller that
+    # actually needs it (openrouteservice.py) is responsible for treating an
+    # empty value as "not configured".
+    ors_api_key: str = ""
     # Comma-separated list of origins the frontend is served from, allowed to
     # make cross-origin requests to this API (see CORSMiddleware in main.py).
     # Defaults cover the two ways this POC actually runs the frontend: the

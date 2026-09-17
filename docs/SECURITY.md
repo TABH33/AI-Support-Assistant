@@ -68,6 +68,32 @@ string) — at every data-access point.
   which would have let a future caller accidentally skip tenant filtering
   just by forgetting the argument.
 
+### Risk-zone lookups are not tenant-scoped (a deliberate exception)
+
+`TelematicsDataSource.get_driving_events_near(latitude, longitude,
+radius_km)` — used by the [route-planning feature](ROUTE_PLANNING.md) to
+find historical "risk zone" incidents near a point on a route — is the
+**one method on the Protocol with no `customer_id` parameter at all**,
+unlike every method described above.
+
+This is intentional, not an oversight: a "risk zone" is a property of a
+*road segment*, not of any one customer's fleet. Pooling incident data
+across every customer's synthetic fleet gives a meaningful density signal;
+scoping it to a single customer's own (usually thin) trip history would
+not. Results carry only event type, location, and time — **never driver or
+customer identity** — and the method's own docstring in
+`app/datasources/base.py` warns callers not to join back to `Driver` to
+attach one. This mirrors the rest of the POC's synthetic/anonymized-data
+rule, applied to a case where the *same* rule justifies pooling across
+tenants rather than isolating them.
+
+Every other method on `TelematicsDataSource` keeps the required,
+keyword-only `customer_id` parameter described above. If you're adding a
+new data-access method, that's still the default to reach for — this
+exception exists for exactly one reason (an aggregate, identity-free,
+cross-fleet signal) and shouldn't be copied without the same reasoning
+applying.
+
 ## At-rest PII encryption
 
 `Customer.full_name`, `Customer.email`, and `Customer.phone_number` are
@@ -110,6 +136,10 @@ Every AI-generated recommendation shown to a user is recorded in
   and whether it was escalated.
 - `action=report_generated` — one row per generated report (chat-routed or
   via the direct `/reports/*` endpoints), noting the report type.
+- `action=route_plan_generated` — one row per route-plan request (chat-routed
+  or via `POST /route-plan`), noting origin/destination and the outcome
+  (success, or the specific `unavailable_reason` — see
+  [ROUTE_PLANNING.md](ROUTE_PLANNING.md)).
 
 `action` is a plain string, not a DB-level enum, so a future auditable
 action (e.g. a not-yet-built support-agent ticket-status-change feature)

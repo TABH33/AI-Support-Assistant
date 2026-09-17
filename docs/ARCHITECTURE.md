@@ -61,7 +61,8 @@ FastAPI, organized by concern rather than by REST resource:
 | Package | Responsibility |
 |---|---|
 | `api/` | HTTP route handlers (`auth.py`, `telematics.py`, `chat.py`, `reports.py`) — thin, delegate to `ai/`, `datasources/`, `security/` |
-| `ai/` | The RAG pipeline: embeddings, retrieval, confidence scoring, escalation, and the (separate, non-RAG) report generators |
+| `ai/` | The RAG pipeline: embeddings, retrieval, confidence scoring, escalation, the (separate, non-RAG) report generators, and route-planning orchestration (`route_planning.py`) |
+| `integrations/` | Thin HTTP clients for external services this app depends on but doesn't run itself — OpenRouteService (directions/geocoding) and Open-Meteo (weather). Same "one dedicated client module per external call, no `httpx` above it" discipline as `ai/llm.py`/`ai/embeddings.py`. See [ROUTE_PLANNING.md](ROUTE_PLANNING.md) |
 | `datasources/` | `TelematicsDataSource` — the storage-agnostic interface every telematics read goes through |
 | `auth/` | Password hashing (bcrypt), JWT issue/verify, the `require_role` dependency |
 | `security/` | At-rest PII encryption (`crypto.py`) and audit logging (`audit.py`) |
@@ -121,10 +122,13 @@ model for) and remains a planned next step, not a shipped feature.
 2. `app/api/chat.py` resolves or creates the `ChatSession`, and derives
    `customer_id` from the session — **never from the request body** (see
    [SECURITY.md](SECURITY.md) for why this matters).
-3. A lightweight keyword check (`_detect_report_intent`) asks: is this a
-   request for a start-of-day/end-of-day report? If yes, it routes straight
-   to `ai/reports.py`'s generators — deliberately bypassing RAG, since
-   reports are "always delivered, not confidence-gated" by design.
+3. Two lightweight keyword checks run before RAG, in order: `_detect_route_plan_intent`
+   (is this "plan a trip from X to Y"?) then `_detect_report_intent` (is this
+   a start-of-day/end-of-day report request?). A match routes straight to
+   `ai/route_planning.py` or `ai/reports.py` respectively — both
+   deliberately bypass RAG, since both are "always delivered, not
+   confidence-gated" by design. See [ROUTE_PLANNING.md](ROUTE_PLANNING.md)
+   for the route-planning path in full.
 4. Otherwise, `ai/retrieval.py` embeds the query, does a `pgvector`
    cosine-distance top-k search against `knowledge_base_articles`, and
    pulls any relevant driver/vehicle/trip/driving-event context via the

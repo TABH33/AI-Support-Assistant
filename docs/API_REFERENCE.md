@@ -108,13 +108,25 @@ happens inside.
 
 **Response** (`ChatResponse`) `200`
 ```json
-{ "session_id": 1, "message_id": 42, "answer": "...", "confidence": 0.82, "escalated": false }
+{
+  "session_id": 1, "message_id": 42, "answer": "...",
+  "confidence": 0.82, "escalated": false,
+  "route_plan": null
+}
 ```
 
-Before the RAG pipeline runs, the query is checked for report intent (see
-[RAG_PIPELINE.md](RAG_PIPELINE.md)) — phrases like "daily report" or "start
-of day" route straight to the report generators instead, returning
-`confidence: 1.0, escalated: false` unconditionally.
+Before the RAG pipeline runs, the query is checked for two other intents,
+in order:
+
+1. **Route planning** — "plan a trip from Sydney CBD to Parramatta" routes
+   to the [route-planning feature](ROUTE_PLANNING.md) instead of RAG,
+   returning `confidence: 1.0, escalated: false` and a populated
+   `route_plan` field (same shape as [`POST /route-plan`](#post-route-plan)'s
+   response) on success — `null` on every other kind of turn.
+2. **Reports** (see [RAG_PIPELINE.md](RAG_PIPELINE.md)) — phrases like
+   "daily report" or "start of day" route straight to the report
+   generators instead, also returning `confidence: 1.0, escalated: false`
+   unconditionally.
 
 ### `GET /tickets`
 
@@ -188,3 +200,56 @@ Ignored for a `customer`-role caller (always their own id); **required**
 
 Every report call is written to `audit_logs` (`action=report_generated`),
 same as a chat answer.
+
+---
+
+## Route Planning (`backend/app/api/route_plan.py`)
+
+Full detail (algorithm, warning thresholds, known limitations): [ROUTE_PLANNING.md](ROUTE_PLANNING.md).
+
+### `POST /route-plan`
+
+Requires `require_role("customer", "support_agent")`. No `customer_id`
+scoping — route/weather/risk-zone data isn't customer-owned.
+
+**Request** (`RoutePlanRequest`)
+```json
+{ "origin": "Sydney CBD", "destination": "Parramatta", "waypoints": null }
+```
+`origin`/`destination`/each `waypoints` entry accept either a place-name
+string (geocoded server-side via OpenRouteService) or
+`{"lat": ..., "lon": ...}`.
+
+**Response** (`RoutePlanResponse`) `200` — **always 200**, even on failure;
+failures are reported in-band via `unavailable`/`unavailable_reason`, never
+a 5xx:
+```json
+{
+  "distance_km": 24.14,
+  "duration_min": 27.6,
+  "geometry": { "type": "LineString", "coordinates": [[151.21, -33.87], ...] },
+  "warnings": [
+    {
+      "location": { "lat": -33.84, "lon": 151.02 },
+      "distance_from_origin_km": 12.1,
+      "type": "risk_zone",
+      "severity": "moderate",
+      "description": "11 driving events recorded within 500m of this point (7 harsh braking)."
+    }
+  ],
+  "unavailable": false,
+  "unavailable_reason": null,
+  "unavailable_message": null
+}
+```
+
+On failure, `distance_km`/`duration_min`/`geometry` are `null`, `warnings`
+is `[]`, `unavailable` is `true`, and `unavailable_reason` is one of:
+
+| `unavailable_reason` | Meaning |
+|---|---|
+| `"geocoding_failed"` | A place name didn't resolve — `unavailable_message` names it and suggests checking spelling |
+| `"service_unavailable"` | ORS/Open-Meteo outage, missing `ORS_API_KEY`, or a database error — `unavailable_message` suggests retrying shortly |
+
+Every call (success or failure) is written to `audit_logs`
+(`action=route_plan_generated`), noting origin/destination and the outcome.

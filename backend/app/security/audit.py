@@ -33,6 +33,7 @@ from app.models.audit import AuditLog
 
 ACTION_CHAT_ANSWER = "chat_answer"
 ACTION_REPORT_GENERATED = "report_generated"
+ACTION_ROUTE_PLAN_GENERATED = "route_plan_generated"
 
 
 def record_audit_event(
@@ -70,4 +71,9 @@ def record_audit_event(
     return entry
 
 
-__all__ = ["ACTION_CHAT_ANSWER", "ACTION_REPORT_GENERATED", "record_audit_event"]
+__all__ = [
+    "ACTION_CHAT_ANSWER",
+    "ACTION_REPORT_GENERATED",
+    "ACTION_ROUTE_PLAN_GENERATED",
+    "record_audit_event",
+]

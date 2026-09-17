@@ -32,6 +32,7 @@ optional (see `base.py`'s docstring for why).
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 
 from fastapi import Depends
@@ -39,6 +40,7 @@ from sqlalchemy.orm import Session
 
 from app.datasources.base import TelematicsDataSource
 from app.database import get_db
+from app.geo import haversine_distance_km
 from app.models.device import Device
 from app.models.knowledge import KnowledgeBaseArticle
 from app.models.telematics import Driver, DrivingEvent, Trip, Vehicle
@@ -92,6 +94,31 @@ class SyntheticDataSource(TelematicsDataSource):
                 .filter(Driver.customer_id == customer_id)
             )
         return query.order_by(DrivingEvent.event_time).all()
+
+    def get_driving_events_near(
+        self, latitude: float, longitude: float, radius_km: float
+    ) -> list[DrivingEvent]:
+        # Bounding-box prefilter in SQL (cheap, index-friendly): 1 degree of
+        # latitude is ~111km everywhere; 1 degree of longitude shrinks with
+        # cos(latitude), so widen the longitude box accordingly.
+        lat_delta = radius_km / 111.0
+        lon_delta = radius_km / (111.0 * max(math.cos(math.radians(latitude)), 0.01))
+
+        candidates = (
+            self._db.query(DrivingEvent)
+            .filter(DrivingEvent.latitude.isnot(None))
+            .filter(DrivingEvent.longitude.isnot(None))
+            .filter(DrivingEvent.latitude.between(latitude - lat_delta, latitude + lat_delta))
+            .filter(DrivingEvent.longitude.between(longitude - lon_delta, longitude + lon_delta))
+            .all()
+        )
+
+        return [
+            event
+            for event in candidates
+            if haversine_distance_km(latitude, longitude, event.latitude, event.longitude)
+            <= radius_km
+        ]
 
     def get_knowledge_base_articles(
         self, category: str | None = None
