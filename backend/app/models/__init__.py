@@ -11,6 +11,7 @@ from app.models.chat import ChatMessage, ChatSession, Notification, SupportTicke
 from app.models.customer import Customer
 from app.models.device import Device
 from app.models.knowledge import KnowledgeBaseArticle
+from app.models.route_plan import RoutePlan
 from app.models.support_agent import SupportAgent
 from app.models.telematics import DrivingEvent, Driver, Trip, Vehicle
 
@@ -29,4 +30,5 @@ __all__ = [
     "SupportAgent",
     "KnowledgeBaseArticle",
     "AuditLog",
+    "RoutePlan",
 ]

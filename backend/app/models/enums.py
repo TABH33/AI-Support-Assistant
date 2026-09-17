@@ -77,3 +77,12 @@ class ChatMessageRole(str, Enum):
 
     USER = "user"
     ASSISTANT = "assistant"
+
+
+class RoutePlanStatus(str, Enum):
+    """Whether a saved `RoutePlan` (see `app.models.route_plan`) is still
+    being tracked for the day it was created, or has been manually marked
+    complete via `PATCH /route-plans/{id}/complete`."""
+
+    ACTIVE = "active"
+    COMPLETED = "completed"
