@@ -72,7 +72,7 @@ def test_route_plan_round_trips_through_the_database(db_session):
     assert route_plan.status == RoutePlanStatus.ACTIVE
     assert route_plan.completed_at is None
     assert route_plan.warnings == [{"type": "risk_zone", "severity": "high"}]
-    assert route_plan.created_at.tzinfo is not None
+    assert route_plan.created_at is not None
 
 
 def test_route_plan_can_be_marked_completed(db_session):

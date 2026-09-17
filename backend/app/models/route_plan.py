@@ -15,12 +15,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import JSON, Boolean, Enum, ForeignKey, Numeric, String
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
 from app.models.enums import RoutePlanStatus
-from app.models.types import UtcDateTime
 
 if TYPE_CHECKING:
     from app.models.customer import Customer
@@ -63,9 +62,9 @@ class RoutePlan(Base):
         default=RoutePlanStatus.ACTIVE,
     )
     created_at: Mapped[datetime] = mapped_column(
-        UtcDateTime(), nullable=False, default=lambda: datetime.now(timezone.utc)
+        DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
-    completed_at: Mapped[datetime | None] = mapped_column(UtcDateTime(), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     customer: Mapped["Customer"] = relationship("Customer")
 
