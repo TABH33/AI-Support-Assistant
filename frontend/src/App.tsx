@@ -7,6 +7,7 @@ import Login from './pages/Login'
 import Overview from './pages/Overview'
 import RoutesPage from './pages/Routes'
 import Drivers from './pages/Drivers'
+import DriverDetail from './pages/DriverDetail'
 import Alerts from './pages/Alerts'
 
 function App() {
@@ -28,6 +29,7 @@ function App() {
               <Route path="/overview" element={<Overview />} />
               <Route path="/routes" element={<RoutesPage />} />
               <Route path="/drivers" element={<Drivers />} />
+              <Route path="/drivers/:driverId" element={<DriverDetail />} />
               <Route path="/alerts" element={<Alerts />} />
               <Route path="*" element={<Navigate to="/overview" replace />} />
             </Route>

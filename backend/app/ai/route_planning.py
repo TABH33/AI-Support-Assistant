@@ -11,9 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
 
-from sqlalchemy import func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -30,6 +28,7 @@ from app.integrations.openrouteservice import (
     get_directions,
 )
 from app.models.enums import RoutePlanStatus
+from app.timeutil import site_day_bounds, site_today
 from app.models.route_plan import RoutePlan
 
 logger = logging.getLogger(__name__)
@@ -474,8 +473,10 @@ def summarize_todays_routes(db: Session, *, customer_id: int | None) -> str:
     app's RAG pipeline already guards against elsewhere (see
     app/ai/chat_service.py's strict "answer only from context" system
     prompt)."""
-    today = datetime.now(timezone.utc).date()
-    query = db.query(RoutePlan).filter(func.date(RoutePlan.created_at) == today)
+    start, end = site_day_bounds(site_today())
+    query = db.query(RoutePlan).filter(
+        RoutePlan.created_at >= start, RoutePlan.created_at < end
+    )
     if customer_id is not None:
         query = query.filter(RoutePlan.customer_id == customer_id)
     routes = query.order_by(RoutePlan.created_at.desc()).all()

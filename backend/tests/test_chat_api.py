@@ -449,6 +449,38 @@ def test_route_plan_intent_does_not_swallow_trailing_words_into_destination(
 @pytest.mark.parametrize(
     "query",
     [
+        "drive from Sydney CBD to Bondi Beach",
+        "I want to drive from Sydney CBD to Bondi Beach",
+    ],
+)
+def test_drive_from_to_command_routes_to_route_planning(client, fleet_a, query):
+    """A genuine "drive from X to Y" command (not a question) must reach
+    the route-planning API -- see _ROUTE_PLAN_DRIVE_FROM_TO_PATTERN's
+    comment for why this is narrower than the false positive the
+    parametrized test below still guards against."""
+    route_result = RoutePlanResult(
+        distance_km=6.0,
+        duration_min=12.0,
+        geometry={"type": "LineString", "coordinates": []},
+        warnings=[],
+    )
+    with (
+        patch("app.api.chat.build_route_plan", return_value=route_result) as mock_build,
+        patch("app.api.chat.summarize_route_plan", return_value="A 6km trip."),
+    ):
+        response = client.post(
+            "/chat",
+            json={"query": query, "device_id": fleet_a["device"].device_id},
+            headers=fleet_a["headers"],
+        )
+
+    assert response.status_code == 200
+    mock_build.assert_called_once_with("Sydney CBD", "Bondi Beach", db=ANY)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
         # Contains "drive", "from" and "to" -- an ordinary question about
         # driving, not a request to plan a route.
         "How long does it take to drive from home to work?",

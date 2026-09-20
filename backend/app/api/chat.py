@@ -233,6 +233,27 @@ _ROUTE_PLAN_FROM_TO_PATTERN = re.compile(
     rf"(?P<destination>{_PLACE_CHARS}{{1,60}}?){_PLACE_BOUNDARY}",
     re.IGNORECASE,
 )
+#: "drive from X to Y" is a second, narrower from-to pattern -- see the
+#: comment above for why bare "drive" was originally excluded from
+#: _ROUTE_PLAN_FROM_TO_PATTERN entirely (it hijacked ordinary questions like
+#: "How long does it take to drive from home to work?"). Both of that
+#: comment's false-positive examples are phrased as questions, starting
+#: with an interrogative/auxiliary word ("How", "why"). This pattern is
+#: only tried (see _detect_route_plan_intent below) when the query does
+#: NOT start with one of those words, which lets a genuine command --
+#: "drive from Sydney CBD to Bondi Beach", "I want to drive from X to Y" --
+#: reach the route-planning API without reopening that false-positive.
+_ROUTE_PLAN_DRIVE_FROM_TO_PATTERN = re.compile(
+    r"drive\s+from\s+"
+    rf"(?P<origin>{_PLACE_CHARS}{{1,60}}?)\s+to\s+"
+    rf"(?P<destination>{_PLACE_CHARS}{{1,60}}?){_PLACE_BOUNDARY}",
+    re.IGNORECASE,
+)
+_QUESTION_STARTER_PATTERN = re.compile(
+    r"^\s*(?:how|why|what|when|where|who|which|does|did|is|was|are|were|"
+    r"can|could|would|should)\b",
+    re.IGNORECASE,
+)
 _ROUTE_PLAN_TO_ONLY_PATTERN = re.compile(
     r"(?:warnings? on the route to|directions? to|route to|plan (?:a )?trip to|drive to)"
     rf"\s+(?P<destination>{_PLACE_CHARS}{{1,60}}?){_PLACE_BOUNDARY}",
@@ -263,6 +284,8 @@ def _detect_route_plan_intent(query: str) -> RoutePlanIntent | None:
     RAG) for ordinary telematics questions that merely mention driving --
     see the pattern comments above."""
     from_to_match = _ROUTE_PLAN_FROM_TO_PATTERN.search(query)
+    if from_to_match is None and not _QUESTION_STARTER_PATTERN.match(query):
+        from_to_match = _ROUTE_PLAN_DRIVE_FROM_TO_PATTERN.search(query)
     if from_to_match:
         origin = _clean_place(from_to_match.group("origin"))
         destination = _clean_place(from_to_match.group("destination"))

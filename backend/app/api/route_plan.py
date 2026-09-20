@@ -20,7 +20,6 @@ from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.ai.route_planning import RoutePlanResult, Warning, build_route_plan, save_route_plan
@@ -30,6 +29,7 @@ from app.integrations.openrouteservice import Coordinates
 from app.models.enums import RoutePlanStatus
 from app.models.route_plan import RoutePlan
 from app.security.audit import ACTION_ROUTE_PLAN_GENERATED, record_audit_event
+from app.timeutil import site_day_bounds, site_today
 
 router = APIRouter(tags=["route-plan"])
 
@@ -215,8 +215,11 @@ def get_route_plans(
     db: Session = Depends(get_db),
     current_user: CurrentUser = Depends(_allowed_roles),
 ) -> list[RoutePlanListItem]:
-    target_date = date_ or datetime.now(timezone.utc).date()
-    query = db.query(RoutePlan).filter(func.date(RoutePlan.created_at) == target_date)
+    target_date = date_ or site_today()
+    start, end = site_day_bounds(target_date)
+    query = db.query(RoutePlan).filter(
+        RoutePlan.created_at >= start, RoutePlan.created_at < end
+    )
 
     if current_user.role == "customer":
         query = query.filter(RoutePlan.customer_id == current_user.user_id)

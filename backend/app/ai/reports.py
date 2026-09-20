@@ -82,7 +82,9 @@ from app.datasources.base import TelematicsDataSource
 from app.datasources.synthetic import SyntheticDataSource
 from app.models.device import Device
 from app.models.enums import DrivingEventType
+from app.models.route_plan import RoutePlan
 from app.models.telematics import Driver, DrivingEvent, Trip, Vehicle
+from app.timeutil import SITE_TZ, site_day_bounds
 
 _REPORT_SYSTEM_PROMPT = (
     "You are a fleet operations assistant for a telematics platform, writing "
@@ -107,10 +109,12 @@ _REPORT_SYSTEM_PROMPT = (
 
 
 def _today_bounds(now: datetime) -> tuple[datetime, datetime]:
-    """Return `(start_of_today, start_of_tomorrow)` in UTC, both midnight,
-    for `now`'s calendar date."""
-    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return today_start, today_start + timedelta(days=1)
+    """Return `(start_of_today, start_of_tomorrow)` in UTC, spanning `now`'s
+    Sydney-local calendar date -- not UTC's own calendar date. See
+    `app.timeutil`'s module docstring: Sydney runs 10-11 hours ahead of
+    UTC, so a naive UTC-midnight boundary would drop early-morning
+    Sydney-local activity from "today" until UTC's date rolls over."""
+    return site_day_bounds(now.astimezone(SITE_TZ).date())
 
 
 def _lookback_bounds(now: datetime, hours: int = 24) -> tuple[datetime, datetime]:
@@ -209,6 +213,52 @@ def _format_planned_routes(trips: list[Trip], drivers_by_id: dict[int, Driver], 
             f"  - Trip {trip.trip_id}: {driver_label} in {vehicle_label}, {route}, "
             f"starts {trip.start_time} ({status})"
         )
+    return "\n".join(lines)
+
+
+def _route_plans_for_today(
+    db: Session, customer_id: int, today_start: datetime, tomorrow_start: datetime
+) -> list[RoutePlan]:
+    """Today's saved `RoutePlan` rows for `customer_id` (see
+    `app.models.route_plan`). `RoutePlan` isn't part of
+    `TelematicsDataSource` -- it's the route-planning feature's own table,
+    queried directly here the same way `app/api/route_plan.py` and
+    `app/ai/route_planning.py` already query it."""
+    return (
+        db.query(RoutePlan)
+        .filter(
+            RoutePlan.customer_id == customer_id,
+            RoutePlan.created_at >= today_start,
+            RoutePlan.created_at < tomorrow_start,
+        )
+        .order_by(RoutePlan.created_at.asc())
+        .all()
+    )
+
+
+def _format_route_risk_warnings(route_plans: list[RoutePlan]) -> str:
+    """Weather/risk-zone warnings recorded against today's planned routes
+    (see `app.ai.route_planning.build_route_plan`'s `Warning` type) -- the
+    one report section sourced from the route-planning feature's own risk
+    signals, rather than raw `DrivingEvent` counts."""
+    if not route_plans:
+        return "(no routes planned today)"
+    flagged = [rp for rp in route_plans if rp.warnings]
+    if not flagged:
+        return f"No risk/weather warnings on any of {len(route_plans)} route(s) planned today."
+    lines = [f"{len(flagged)} of {len(route_plans)} route(s) planned today carry warnings:"]
+    for route_plan in flagged:
+        high_severity = sum(1 for w in route_plan.warnings if w.get("severity") == "high")
+        lines.append(
+            f"  - {route_plan.origin_label} -> {route_plan.destination_label}: "
+            f"{len(route_plan.warnings)} warning(s)"
+            f"{f', {high_severity} high-severity' if high_severity else ''}"
+        )
+        for warning in route_plan.warnings:
+            lines.append(
+                f"      * {warning.get('type', 'warning')} "
+                f"({warning.get('severity', 'unknown')}): {warning.get('description', '')}"
+            )
     return "\n".join(lines)
 
 
@@ -312,6 +362,7 @@ def generate_start_of_day_report(
     risk_alert_events = _flatten(recent_events_by_trip)
     unresolved_trips = [t for t in recent_trips if t.end_time is None]
     unresolved_events = _flatten({t.trip_id: recent_events_by_trip.get(t.trip_id, []) for t in unresolved_trips})
+    todays_route_plans = _route_plans_for_today(db, customer_id, today_start, tomorrow_start)
 
     context_block = (
         f"Fleet overview: {_format_fleet_overview(drivers, vehicles, devices)}\n\n"
@@ -320,7 +371,9 @@ def generate_start_of_day_report(
         f"{_format_driving_events(risk_alert_events, empty_label='(no driving events in the last 24 hours)')}\n\n"
         f"Unresolved incidents (driving events on trips still in progress):\n"
         f"{_format_driving_events(unresolved_events, empty_label='(no trips currently in progress)')}\n\n"
-        f"Planned routes for today:\n{_format_planned_routes(planned_trips, drivers_by_id, vehicles_by_id)}"
+        f"Planned routes for today:\n{_format_planned_routes(planned_trips, drivers_by_id, vehicles_by_id)}\n\n"
+        f"Route risk/weather warnings for today's planned routes:\n"
+        f"{_format_route_risk_warnings(todays_route_plans)}"
     )
 
     return _generate_report(f"Start-of-day fleet report for customer {customer_id}", context_block)
@@ -351,13 +404,16 @@ def generate_end_of_day_report(
     events_by_trip = _events_for_trips(ds, today_trips, customer_id)
     all_events = _flatten(events_by_trip)
     counts = _count_by_type(all_events)
+    todays_route_plans = _route_plans_for_today(db, customer_id, today_start, tomorrow_start)
 
     context_block = (
         f"Trips today: {len(today_trips)}\n\n"
         f"Event summary (speeding / harsh braking / route deviations / fuel):\n"
         f"{_format_event_type_breakdown(counts)}\n\n"
         f"Driver performance summary:\n"
-        f"{_format_driver_performance(today_trips, events_by_trip, drivers_by_id)}"
+        f"{_format_driver_performance(today_trips, events_by_trip, drivers_by_id)}\n\n"
+        f"Route risk/weather warnings for today's planned routes:\n"
+        f"{_format_route_risk_warnings(todays_route_plans)}"
     )
 
     return _generate_report(f"End-of-day fleet report for customer {customer_id}", context_block)
