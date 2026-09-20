@@ -343,22 +343,30 @@ def _detect_todays_routes_intent(query: str) -> bool:
 # docstring: "always delivered, not confidence-gated"), so this is a plain
 # keyword routing decision made before retrieve_context runs, not a change
 # to the RAG/escalation pipeline itself.
-_START_OF_DAY_KEYWORDS = ("start of day", "start-of-day", "morning report", "morning summary")
-_REPORT_KEYWORDS = ("report", "summary", "daily digest")
+#: Word-boundary patterns, not plain substring matching (final-review fix,
+#: live-discovered bug): a genuine question like "my device hasn't
+#: *reported* its location in days" used to hijack into an end-of-day
+#: report, because the old plain-substring check treated "report" inside
+#: "reported" as a match. `\b...\b` matches only the whole word "report"/
+#: "reports", not "reported"/"reporting"/"reportedly".
+_START_OF_DAY_PATTERN = re.compile(
+    r"\b(?:start[\s-]of[\s-]day|morning report|morning summary)\b", re.IGNORECASE
+)
+_REPORT_PATTERN = re.compile(r"\b(?:reports?|summary|daily digest)\b", re.IGNORECASE)
 
 
 def _detect_report_intent(query: str) -> str | None:
     """Return ``"start_of_day"``, ``"end_of_day"``, or ``None``.
 
-    Deliberately simple substring matching, not NLP -- it only needs to
+    Deliberately simple keyword matching, not NLP -- it only needs to
     catch the common phrasings ("give me the daily report", "end of day
     summary", "morning report") without false-positiving on ordinary
-    telematics questions, none of which use the word "report"/"summary".
+    telematics questions that merely contain "report" as part of a longer
+    word (e.g. "reported").
     """
-    lowered = query.lower()
-    if any(keyword in lowered for keyword in _START_OF_DAY_KEYWORDS):
+    if _START_OF_DAY_PATTERN.search(query):
         return "start_of_day"
-    if any(keyword in lowered for keyword in _REPORT_KEYWORDS):
+    if _REPORT_PATTERN.search(query):
         return "end_of_day"
     return None
 

@@ -330,6 +330,56 @@ def test_report_intent_routes_to_report_generator_not_rag(client, db_session, fl
     assert messages[1].content == "End-of-day report: 3 trips, 0 harsh braking events."
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "my device hasn't reported its location in days",
+        "why is my vehicle no longer reporting its position",
+        "the driver reportedly ran a red light yesterday",
+    ],
+)
+def test_word_containing_report_does_not_hijack_the_report_intent(client, fleet_a, query):
+    """Live-discovered bug: the old plain-substring check on "report"
+    matched inside "reported"/"reporting"/"reportedly", hijacking a
+    genuine question into an end-of-day report instead of answering it.
+    Word-boundary matching must let these fall through to RAG."""
+    with (
+        patch("app.api.chat.generate_end_of_day_report") as mock_report,
+        patch(
+            "app.ai.chat_service.chat_completion",
+            return_value='{"answer": "Checking your device status now.", "confidence": 0.8}',
+        ) as mock_chat,
+    ):
+        response = client.post(
+            "/chat",
+            json={"query": query, "device_id": fleet_a["device"].device_id},
+            headers=fleet_a["headers"],
+        )
+
+    assert response.status_code == 200
+    mock_report.assert_not_called()
+    mock_chat.assert_called_once()
+
+
+@pytest.mark.parametrize("query", ["give me a report", "send the reports for today"])
+def test_report_and_reports_still_trigger_the_report_intent(client, fleet_a, query):
+    """The word-boundary fix must not overcorrect -- "report"/"reports" as
+    their own words still trigger the report generator."""
+    with (
+        patch("app.api.chat.generate_end_of_day_report", return_value="report text") as mock_report,
+        patch("app.ai.chat_service.chat_completion") as mock_chat,
+    ):
+        response = client.post(
+            "/chat",
+            json={"query": query, "device_id": fleet_a["device"].device_id},
+            headers=fleet_a["headers"],
+        )
+
+    assert response.status_code == 200
+    mock_report.assert_called_once()
+    mock_chat.assert_not_called()
+
+
 def test_route_plan_intent_routes_to_route_planning_not_rag(client, db_session, fleet_a):
     """A "plan a trip from X to Y" question must bypass RAG entirely and
     return a route summary generated from build_route_plan/summarize_route_plan,

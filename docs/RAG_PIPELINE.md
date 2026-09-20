@@ -37,23 +37,24 @@ first because its keyword set is more specific than the report check's.
 ## Step 1: report-intent routing (bypasses RAG entirely)
 
 Before anything else *except* the route-plan check above,
-`app/api/chat.py`'s `_detect_report_intent` does a plain substring check on
-the lowercased query:
+`app/api/chat.py`'s `_detect_report_intent` does a word-boundary regex
+check on the query:
 
 - Matches `"start of day"`, `"start-of-day"`, `"morning report"`, `"morning
   summary"` → routes to `generate_start_of_day_report`.
-- Otherwise matches `"report"`, `"summary"`, `"daily digest"` → routes to
-  `generate_end_of_day_report`.
+- Otherwise matches the whole word `"report"`/`"reports"`, `"summary"`, or
+  `"daily digest"` → routes to `generate_end_of_day_report`.
 - No match → falls through to RAG (step 2 onward).
 
-**Known live gotcha**: this is a plain *substring* check, not a
-word-boundary one — `"report"` matches inside `"reported"`. A genuine
-question like *"my device hasn't reported its location in days"* gets
-hijacked into a report response instead of answering the real question.
-Confirmed live; not yet fixed (word-boundary regex, e.g. `\breport(s|ed|ing)?\b`
-tuned to still catch "report"/"reports" but not swallow unrelated words, is
-the straightforward fix). Avoid the literal substring `"report"` in
-questions that aren't actually report requests until this is tightened.
+**Fixed live bug**: this used to be a plain *substring* check, so
+`"report"` matched inside `"reported"` — a genuine question like *"my
+device hasn't reported its location in days"* got hijacked into a report
+response instead of answering the real question. Fixed with word-boundary
+matching (`\breports?\b`, etc. — see `_REPORT_PATTERN`/
+`_START_OF_DAY_PATTERN` in `app/api/chat.py`), which still catches
+"report"/"reports" as their own words but no longer matches inside
+"reported"/"reporting"/"reportedly". Regression-tested in
+`backend/tests/test_chat_api.py`.
 
 This exists because the report generators (`app/ai/reports.py`) were built
 as standalone functions and were never wired into the chat pipeline — a
