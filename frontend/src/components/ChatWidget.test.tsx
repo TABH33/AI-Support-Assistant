@@ -203,6 +203,30 @@ describe('ChatWidget', () => {
     expect(banner).toHaveTextContent('You are talking to an AI assistant')
   })
 
+  it('greets the user with a friendly message when the chat is opened', async () => {
+    renderWidget()
+
+    await openWidget()
+
+    expect(screen.getByTestId('chat-greeting')).toHaveTextContent(
+      "Hi, I'm your AI Assistant — how can I help you today?"
+    )
+  })
+
+  it('replaces the greeting with the conversation once a message is sent', async () => {
+    renderWidget()
+    mockChatFetch()
+
+    await openWidget()
+    expect(screen.getByTestId('chat-greeting')).toBeInTheDocument()
+
+    await sendMessage('How far did my vehicle travel yesterday?')
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('chat-greeting')).not.toBeInTheDocument()
+    })
+  })
+
   it('does not re-show the disclosure banner on a second open in the same session', async () => {
     renderWidget()
 

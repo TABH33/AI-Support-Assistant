@@ -391,9 +391,14 @@ export function ChatWidget() {
 
               <div className="flex-1 space-y-2 overflow-y-auto px-3 py-3">
                 {messages.length === 0 && (
-                  <p className="text-sm text-gray-500 dark:text-gray-400">
-                    Ask a question about your fleet, drivers, or trips.
-                  </p>
+                  <div className="max-w-[85%]">
+                    <div
+                      data-testid="chat-greeting"
+                      className="rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-white"
+                    >
+                      <p>Hi, I'm your AI Assistant — how can I help you today?</p>
+                    </div>
+                  </div>
                 )}
                 {messages.map((message) => (
                   <div key={message.id} className={message.role === 'user' ? 'ml-auto max-w-[85%]' : 'max-w-[85%]'}>
