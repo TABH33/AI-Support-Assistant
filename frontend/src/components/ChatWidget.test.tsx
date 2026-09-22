@@ -605,6 +605,41 @@ describe('ChatWidget', () => {
       expect(screen.queryByTestId('ces-survey')).not.toBeInTheDocument()
       expect(screen.queryByRole('dialog', { name: /ai chat assistant/i })).not.toBeInTheDocument()
     })
+
+    it('clicking the X a second time while the survey is showing closes the widget instead of getting stuck', async () => {
+      // Regression test: the X button used to call the same handler that
+      // shows the survey, so once the survey was up, every further click on
+      // X just re-showed it (already showing) and never actually closed --
+      // the widget could only be dismissed via the survey's own Skip/Submit
+      // buttons, which isn't obvious. A user reported this live as "the X
+      // button doesn't close the chat" after getting an answer as a
+      // support_agent -- the trigger condition (at least one completed
+      // message round-trip) is role-agnostic, so this test uses the default
+      // customer login like its sibling tests above.
+      mockChatFetch()
+      renderWidget()
+
+      await openWidget()
+      await sendMessage('How is my fleet doing?')
+      await waitFor(() => {
+        expect(screen.getByText('Your vehicle traveled 42.5 km on its last trip.')).toBeInTheDocument()
+      })
+
+      fireEvent.click(screen.getByRole('button', { name: /minimize chat/i }))
+      expect(screen.getByTestId('ces-survey')).toBeInTheDocument()
+
+      // Second click on the same X button, without touching the survey's
+      // own Skip/Submit controls.
+      fireEvent.click(screen.getByRole('button', { name: /minimize chat/i }))
+
+      await waitFor(() => {
+        expect(screen.queryByRole('dialog', { name: /ai chat assistant/i })).not.toBeInTheDocument()
+      })
+      // No score was ever submitted -- this was a skip-via-X, not a submit.
+      expect((fetch as unknown as Mock).mock.calls.some(([url]) => (url as string).includes('/survey'))).toBe(
+        false
+      )
+    })
   })
 
   describe('route-planning + warnings', () => {

@@ -191,6 +191,13 @@ export function ChatWidget() {
     messagesEndRef.current?.scrollIntoView?.({ block: 'end' })
   }, [messages])
 
+  const handleSurveyDone = useCallback(() => {
+    setSurveyResolved(true)
+    setShowSurvey(false)
+    setShowDisclosure(false)
+    setIsOpen(false)
+  }, [])
+
   const handleToggle = useCallback(() => {
     if (!isOpen) {
       setIsOpen(true)
@@ -205,11 +212,22 @@ export function ChatWidget() {
       return
     }
 
+    // Fixed defect: the CES survey (below) used to be shown in place of
+    // closing, but the X button kept calling this same handler -- once the
+    // survey was already showing, a second click just called
+    // `setShowSurvey(true)` again (already true) and returned, so the
+    // widget could NEVER be closed via the X once a message had been sent,
+    // only via the survey's own Skip/Submit buttons. A click while the
+    // survey is already up now means "let me out" -- skip it and close.
+    if (showSurvey) {
+      handleSurveyDone()
+      return
+    }
+
     // Closing: if a session exists (i.e. at least one message round-trip
     // has completed -- see module docstring) and the survey hasn't already
     // been resolved, show the CES micro-survey in place of actually
-    // closing. The survey's own onSubmit/onSkip callbacks (see the render
-    // below) perform the real close once the user is done with it.
+    // closing THIS click -- a second click (handled above) closes for real.
     if (sessionId !== null && !surveyResolved) {
       setShowSurvey(true)
       return
@@ -217,14 +235,7 @@ export function ChatWidget() {
 
     setShowDisclosure(false)
     setIsOpen(false)
-  }, [isOpen, sessionId, surveyResolved])
-
-  const handleSurveyDone = useCallback(() => {
-    setSurveyResolved(true)
-    setShowSurvey(false)
-    setShowDisclosure(false)
-    setIsOpen(false)
-  }, [])
+  }, [isOpen, showSurvey, sessionId, surveyResolved, handleSurveyDone])
 
   const handleFeedback = useCallback(async (messageId: string, chatMessageId: number, value: boolean) => {
     // Capture the pre-click value so a failed PATCH can be rolled back to it
