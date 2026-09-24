@@ -6,12 +6,18 @@
  * complete" action (`PATCH /route-plans/{id}/complete`). A support_agent
  * additionally sees every customer's routes and can filter by customer ID
  * -- see docs/superpowers/specs/2026-09-18-route-selector-and-daily-tracking-design.md.
+ *
+ * The plan form also carries an optional driver assignment, used by the
+ * Live Tracking page (`/tracking`) to label a moving route with a driver
+ * name -- see
+ * docs/superpowers/specs/2026-09-24-live-tracking-design.md.
  */
 import { useEffect, useState, type FormEvent } from 'react'
 import { apiGet, apiPatch, apiPost } from '../lib/apiClient'
 import { useAuth } from '../context/AuthProvider'
 import { RouteMap } from '../components/RouteMap'
 import type { RoutePlanListItem, RoutePlanResult, RouteWarning } from '../types/routePlan'
+import type { Driver } from '../types/telematics'
 
 const STATUS_BADGE: Record<'active' | 'completed', string> = {
   active: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300',
@@ -91,6 +97,9 @@ export default function RoutesPage() {
   const [origin, setOrigin] = useState('')
   const [destination, setDestination] = useState('')
   const [planCustomerId, setPlanCustomerId] = useState('')
+  const [drivers, setDrivers] = useState<Driver[]>([])
+  const [driversError, setDriversError] = useState<string | null>(null)
+  const [driverId, setDriverId] = useState('')
   const [planResult, setPlanResult] = useState<RoutePlanResult | null>(null)
   const [planError, setPlanError] = useState<string | null>(null)
   const [isPlanning, setIsPlanning] = useState(false)
@@ -122,6 +131,41 @@ export default function RoutesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterCustomerId])
 
+  // `GET /drivers` is already customer-scoped server-side for a `customer`
+  // caller, and returns every customer's drivers for a `support_agent` --
+  // so the support-agent case is narrowed client-side to whichever
+  // customer they typed into the plan form's Customer ID field, matching
+  // how that field already scopes the saved plan itself.
+  useEffect(() => {
+    let cancelled = false
+
+    async function loadDrivers() {
+      try {
+        const data = await apiGet<Driver[]>('/drivers')
+        if (!cancelled) {
+          setDrivers(data)
+          setDriversError(null)
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setDrivers([])
+          setDriversError(err instanceof Error ? err.message : 'Failed to load drivers.')
+        }
+      }
+    }
+
+    void loadDrivers()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const selectableDrivers =
+    isSupportAgent && planCustomerId
+      ? drivers.filter((driver) => driver.customer_id === Number(planCustomerId))
+      : drivers
+
   async function handlePlanRoute(event: FormEvent) {
     event.preventDefault()
     setPlanError(null)
@@ -137,6 +181,9 @@ export default function RoutesPage() {
       const body: Record<string, unknown> = { origin, destination }
       if (isSupportAgent) {
         body.customer_id = Number(planCustomerId)
+      }
+      if (driverId) {
+        body.driver_id = Number(driverId)
       }
       const result = await apiPost<RoutePlanResult>('/route-plan', body)
       setPlanResult(result)
@@ -208,6 +255,29 @@ export default function RoutesPage() {
             />
           </div>
         )}
+        <div>
+          <label htmlFor="route-driver" className="block text-sm text-gray-600 dark:text-gray-300">
+            Driver
+          </label>
+          <select
+            id="route-driver"
+            value={driverId}
+            onChange={(event) => setDriverId(event.target.value)}
+            className="mt-1 rounded border border-gray-300 px-2 py-1 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+          >
+            <option value="">Unassigned</option>
+            {selectableDrivers.map((driver) => (
+              <option key={driver.driver_id} value={driver.driver_id}>
+                {driver.full_name}
+              </option>
+            ))}
+          </select>
+          {driversError && (
+            <p className="mt-1 text-xs text-red-600 dark:text-red-400">
+              Failed to load drivers: {driversError}
+            </p>
+          )}
+        </div>
         <button
           type="submit"
           disabled={isPlanning}
