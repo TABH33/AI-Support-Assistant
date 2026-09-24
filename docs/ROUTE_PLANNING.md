@@ -378,10 +378,24 @@ and get hijacked away from RAG. It's only checked when the route-plan
 intent (above) didn't match first.
 
 When it fires, `app/ai/route_planning.py`'s `summarize_todays_routes()`
-builds the answer **deterministically, with no LLM call**: fleet-wide for
-a `support_agent` (ignoring this session's own `customer_id` — a support
-agent has no fleet of their own, same unscoped-means-all convention as
-`GET /route-plans`), or scoped to the caller's own fleet for a `customer`.
+builds the answer **deterministically, with no LLM call**, scoped to
+**this chat session's own `customer_id`** — regardless of caller role.
+
+**Fixed security bug**: this used to go fleet-wide (`customer_id=None`)
+for a `support_agent`, on the same "unscoped means all" theory as
+`GET /route-plans`/`GET /tickets`. But unlike those, this answer is
+*persisted* as a `ChatMessage` on one customer's `ChatSession`, and a
+`support_agent` can reuse any customer's existing session
+(`_resolve_existing_session`). A fleet-wide answer therefore landed
+*inside* a specific customer's chat history — and that customer could read
+it back: a thumbs-down on the message (`PATCH /chat/messages/{id}/feedback`)
+copies `ChatMessage.content` verbatim into `SupportTicket.description`,
+which `GET /tickets` returns to that same customer. Fixed by always scoping
+to the session's own `customer_id`; a `support_agent` who wants the
+fleet-wide view still has one — `GET /route-plans` with no `?customer_id=`
+filter, which never writes into a tenant-owned record. Regression-tested in
+`backend/tests/test_chat_api.py`.
+
 Skipping the LLM here is deliberate — the warning counts and severities in
 the summary come straight from the stored `RoutePlan` rows, and rewriting
 them through an LLM risks exactly the hallucination/drift the RAG

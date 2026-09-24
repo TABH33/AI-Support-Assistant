@@ -120,6 +120,37 @@ it is deliberately pooled across every customer, per above), but *whose
 daily record it becomes* is strictly customer-scoped the moment it's
 saved.
 
+### Fixed vulnerability: chat's "today's routes" intent leaked other customers' data
+
+The chat "today's routes" intent (`app/api/chat.py`'s `todays_routes_intent`
+branch) used to answer **fleet-wide** for a `support_agent` caller — the
+same unscoped-means-all convention `GET /route-plans` correctly uses. That
+convention is safe for a pure *read* returned directly to the caller, but
+this answer is **persisted** as a `ChatMessage` on a specific customer's
+`ChatSession`, and a `support_agent` can reuse *any* customer's existing
+session (`_resolve_existing_session`). So a support agent asking a
+fleet-wide question inside Customer A's session wrote every other
+customer's route data into Customer A's chat history — and Customer A could
+read it back: a thumbs-down on that message
+(`PATCH /chat/messages/{id}/feedback`) copies `ChatMessage.content`
+verbatim into `SupportTicket.description`, which `GET /tickets` returns to
+Customer A.
+
+**Fix**: the intent now always scopes to the session's own `customer_id`,
+regardless of caller role — a `support_agent` who wants the fleet-wide view
+still has one via `GET /route-plans` with no `?customer_id=` filter, which
+never writes into a tenant-owned record. Regression-tested end-to-end in
+`backend/tests/test_chat_api.py` (`test_todays_routes_intent_does_not_leak_other_customers_data_via_feedback_ticket`),
+which exercises the full chat → thumbs-down → ticket → `GET /tickets` chain
+to confirm no cross-tenant data survives it.
+
+**General lesson for this codebase**: the "unscoped support_agent request
+sees everything" convention (`GET /tickets`, `GET /notifications`,
+`GET /route-plans`) is only safe when the response goes straight back to
+the caller. Any new code that writes an unscoped/fleet-wide read into a
+row owned by one specific customer must scope that write to the owning
+customer instead, never leave it fleet-wide.
+
 ## At-rest PII encryption
 
 `Customer.full_name`, `Customer.email`, and `Customer.phone_number` are

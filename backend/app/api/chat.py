@@ -440,13 +440,21 @@ def post_chat(
         escalated = False
         audit_action = ACTION_ROUTE_PLAN_GENERATED
     elif todays_routes_intent:
-        # Fleet-wide for a support_agent (ignores this session's own
-        # customer_id -- a support_agent has no fleet of their own, same
-        # convention as GET /route-plans and GET /tickets), scoped to the
-        # caller's own fleet for a customer.
-        answer_text = summarize_todays_routes(
-            db, customer_id=customer_id if current_user.role == "customer" else None
-        )
+        # SECURITY FIX: always scope to THIS session's own customer_id,
+        # regardless of caller role. This used to go fleet-wide
+        # (customer_id=None) for a support_agent, on the theory that they
+        # have no fleet of their own -- but unlike GET /route-plans (a pure
+        # read), this answer gets PERSISTED as a ChatMessage on a specific
+        # customer's ChatSession. A support_agent can reuse any customer's
+        # existing session (_resolve_existing_session below), so that
+        # fleet-wide answer landed in one customer's chat history --
+        # readable back by that customer via a thumbs-down
+        # (PATCH /chat/messages/{id}/feedback copies ChatMessage.content
+        # into a SupportTicket.description they can read via GET /tickets).
+        # A support_agent who wants the fleet-wide view already has one:
+        # GET /route-plans with no ?customer_id= filter, which never writes
+        # into a tenant-owned record.
+        answer_text = summarize_todays_routes(db, customer_id=customer_id)
         confidence = 1.0
         escalated = False
         audit_action = ACTION_ROUTE_PLAN_GENERATED

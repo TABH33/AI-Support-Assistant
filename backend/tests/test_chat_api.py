@@ -1048,7 +1048,17 @@ def test_todays_routes_intent_reports_saved_routes(client, db_session, fleet_a):
     mock_chat.assert_not_called()
 
 
-def test_todays_routes_intent_is_fleet_wide_for_support_agent(client, db_session, fleet_a, fleet_b):
+def test_todays_routes_intent_is_scoped_to_the_chat_session_not_fleet_wide(
+    client, db_session, fleet_a, fleet_b
+):
+    """Security regression test: a support_agent's "today's routes" chat
+    answer must be scoped to the SESSION's own customer_id, never
+    fleet-wide -- unlike GET /route-plans (a pure read), this answer is
+    PERSISTED as a ChatMessage on one customer's ChatSession, and a
+    support_agent can reuse any customer's session. A fleet-wide answer
+    here used to leak other customers' route data into customer A's chat
+    history, readable back via PATCH .../feedback -> SupportTicket ->
+    GET /tickets. See the "SECURITY FIX" comment in app/api/chat.py."""
     for fleet in (fleet_a, fleet_b):
         db_session.add(
             RoutePlan(
@@ -1079,7 +1089,61 @@ def test_todays_routes_intent_is_fleet_wide_for_support_agent(client, db_session
 
     assert response.status_code == 200
     body = response.json()
-    assert "2 route(s) planned today" in body["answer"]
+    # Only fleet_a's one route counted -- fleet_b's route (created above
+    # too) must not be included in the answer persisted to fleet_a's
+    # session. Before the fix this said "2 route(s) planned today".
+    assert "1 route(s) planned today" in body["answer"]
+
+
+def test_todays_routes_intent_does_not_leak_other_customers_data_via_feedback_ticket(
+    client, db_session, fleet_a, fleet_b
+):
+    """End-to-end security regression test for the full exploit chain: even
+    if a today's-routes answer somehow named another customer's data, a
+    thumbs-down on it copies ChatMessage.content into a SupportTicket the
+    session's own customer can read via GET /tickets -- so the answer
+    itself must never contain another customer's route labels. This
+    exercises that full chain, not just the chat response."""
+    db_session.add(
+        RoutePlan(
+            customer_id=fleet_b["customer"].customer_id,
+            created_by_role="customer",
+            created_by_id=fleet_b["customer"].customer_id,
+            origin_label="Customer B Secret Depot",
+            destination_label="Customer B Secret Warehouse",
+            warnings=[],
+            unavailable=False,
+        )
+    )
+    db_session.commit()
+
+    from app.auth.security import create_access_token
+
+    agent_token = create_access_token(subject=1, role="support_agent")
+    with patch("app.ai.chat_service.chat_completion"):
+        chat_response = client.post(
+            "/chat",
+            json={
+                "query": "any active routes today?",
+                "device_id": fleet_a["device"].device_id,
+                "customer_id": fleet_a["customer"].customer_id,
+            },
+            headers={"Authorization": f"Bearer {agent_token}"},
+        )
+    message_id = chat_response.json()["message_id"]
+    assert "Customer B Secret" not in chat_response.json()["answer"]
+
+    feedback_response = client.patch(
+        f"/chat/messages/{message_id}/feedback",
+        json={"feedback": False},
+        headers=fleet_a["headers"],
+    )
+    assert feedback_response.status_code == 200
+
+    tickets_response = client.get("/tickets", headers=fleet_a["headers"])
+    assert tickets_response.status_code == 200
+    for ticket in tickets_response.json():
+        assert "Customer B Secret" not in (ticket.get("description") or "")
 
 
 def test_todays_routes_intent_reports_no_routes_when_none_planned(client, fleet_a):
