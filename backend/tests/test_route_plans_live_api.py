@@ -141,6 +141,26 @@ def test_customer_sees_only_their_own_live_routes(client, db_session):
     assert body[0]["customer_id"] == customer_a.customer_id
 
 
+def test_customer_role_ignores_a_customer_id_query_param_for_someone_elses_fleet(
+    client, db_session
+):
+    customer_a = _make_customer(db_session, tag="A")
+    customer_b = _make_customer(db_session, tag="B")
+    _make_route_plan(db_session, customer=customer_a)
+    _make_route_plan(db_session, customer=customer_b)
+
+    token = create_access_token(subject=customer_a.customer_id, role="customer")
+    response = client.get(
+        f"/route-plans/live?customer_id={customer_b.customer_id}",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["customer_id"] == customer_a.customer_id
+
+
 def test_support_agent_sees_all_customers_when_unscoped(client, db_session):
     customer_a = _make_customer(db_session, tag="A")
     customer_b = _make_customer(db_session, tag="B")
