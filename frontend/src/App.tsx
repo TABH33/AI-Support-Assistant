@@ -6,6 +6,7 @@ import { Layout } from './components/Layout'
 import Login from './pages/Login'
 import Overview from './pages/Overview'
 import RoutesPage from './pages/Routes'
+import LiveTracking from './pages/LiveTracking'
 import Drivers from './pages/Drivers'
 import DriverDetail from './pages/DriverDetail'
 import Alerts from './pages/Alerts'
@@ -28,6 +29,7 @@ function App() {
               <Route index element={<Navigate to="/overview" replace />} />
               <Route path="/overview" element={<Overview />} />
               <Route path="/routes" element={<RoutesPage />} />
+              <Route path="/tracking" element={<LiveTracking />} />
               <Route path="/drivers" element={<Drivers />} />
               <Route path="/drivers/:driverId" element={<DriverDetail />} />
               <Route path="/alerts" element={<Alerts />} />

@@ -5,6 +5,7 @@ import { ChatWidget } from './ChatWidget'
 const NAV_LINKS = [
   { to: '/overview', label: 'Overview' },
   { to: '/routes', label: 'Routes' },
+  { to: '/tracking', label: 'Live Tracking' },
   { to: '/drivers', label: 'Drivers' },
   { to: '/alerts', label: 'Alerts' },
 ]
