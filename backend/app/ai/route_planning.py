@@ -371,14 +371,23 @@ def save_route_plan(
     created_by_id: int,
     origin_label: str,
     destination_label: str,
+    driver_id: int | None = None,
 ) -> RoutePlan:
     """Persists `result` as a `RoutePlan` row so it can later be listed
-    (`GET /route-plans`) or summarized for the day it was created
-    (`summarize_todays_routes` below). Called from both `POST /route-plan`
-    and the chat route-plan intent (`app/api/chat.py`) so a route planned
-    through either surface is tracked identically -- including a failed
-    plan (`result.unavailable=True`), which is still worth recording (a
-    manager asking "any routes fail to plan today?" needs this).
+    (`GET /route-plans`), tracked live (`GET /route-plans/live`), or
+    summarized for the day it was created (`summarize_todays_routes`
+    below). Called from both `POST /route-plan` and the chat route-plan
+    intent (`app/api/chat.py`) so a route planned through either surface is
+    tracked identically -- including a failed plan
+    (`result.unavailable=True`), which is still worth recording (a manager
+    asking "any routes fail to plan today?" needs this).
+
+    `driver_id` is optional and defaults to None ("Unassigned"): the chat
+    route-plan intent has no driver-selection surface, and the route form
+    itself leaves it blank unless a driver is picked. Callers are
+    responsible for validating that the driver belongs to `customer_id`'s
+    fleet before passing it (see `_resolve_driver_id` in
+    `app/api/route_plan.py`) -- this function does no lookup of its own.
 
     Flushes, does not commit -- same single-transaction-per-request
     convention as `record_audit_event` (see `app.security.audit`); the
@@ -387,6 +396,7 @@ def save_route_plan(
         customer_id=customer_id,
         created_by_role=created_by_role,
         created_by_id=created_by_id,
+        driver_id=driver_id,
         origin_label=origin_label,
         destination_label=destination_label,
         distance_km=result.distance_km,

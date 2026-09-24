@@ -28,6 +28,7 @@ from app.database import get_db
 from app.integrations.openrouteservice import Coordinates
 from app.models.enums import RoutePlanStatus
 from app.models.route_plan import RoutePlan
+from app.models.telematics import Driver
 from app.security.audit import ACTION_ROUTE_PLAN_GENERATED, record_audit_event
 from app.timeutil import site_day_bounds, site_today
 
@@ -51,6 +52,13 @@ class RoutePlanRequest(BaseModel):
     #: own JWT-derived customer_id. Mirrors `app/api/reports.py`'s
     #: `ReportRequest.customer_id` exactly.
     customer_id: int | None = None
+    #: Optional driver assignment for live tracking. Validated against the
+    #: RESOLVED customer's fleet (see `_resolve_driver_id`) -- a
+    #: `support_agent` planning on a customer's behalf must pass a driver
+    #: from that customer's fleet, not their own. Set once, here: there is
+    #: deliberately no reassignment endpoint. See
+    #: docs/superpowers/specs/2026-09-24-live-tracking-design.md.
+    driver_id: int | None = None
 
 
 class WarningOut(BaseModel):
@@ -150,6 +158,33 @@ def _resolve_customer_id(payload: RoutePlanRequest, current_user: CurrentUser) -
     return payload.customer_id
 
 
+def _resolve_driver_id(payload: RoutePlanRequest, *, customer_id: int, db: Session) -> int | None:
+    """Validate that `payload.driver_id` names a `Driver` in `customer_id`'s
+    own fleet, returning it (or None when no driver was given -- an
+    unassigned plan still tracks).
+
+    400, not 404: this is a malformed field on a write, so the request
+    itself is rejected rather than a resource being reported missing. A
+    nonexistent driver id and another customer's driver id are
+    deliberately indistinguishable in the response, for the same "never
+    reveal that a row exists but isn't yours" reason the read endpoints use
+    404-not-403 (see `app/api/telematics.py`'s module docstring)."""
+    if payload.driver_id is None:
+        return None
+
+    driver = (
+        db.query(Driver)
+        .filter(Driver.driver_id == payload.driver_id, Driver.customer_id == customer_id)
+        .one_or_none()
+    )
+    if driver is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="driver_id does not name a driver in this customer's fleet",
+        )
+    return driver.driver_id
+
+
 def _row_to_list_item(row: RoutePlan) -> RoutePlanListItem:
     return RoutePlanListItem(
         route_plan_id=row.route_plan_id,
@@ -175,6 +210,7 @@ def post_route_plan(
     current_user: CurrentUser = Depends(_allowed_roles),
 ) -> RoutePlanResponse:
     customer_id = _resolve_customer_id(payload, current_user)
+    driver_id = _resolve_driver_id(payload, customer_id=customer_id, db=db)
 
     origin = _to_origin_input(payload.origin)
     destination = _to_origin_input(payload.destination)
@@ -190,6 +226,7 @@ def post_route_plan(
         created_by_id=current_user.user_id,
         origin_label=_to_place_label(payload.origin),
         destination_label=_to_place_label(payload.destination),
+        driver_id=driver_id,
     )
 
     record_audit_event(

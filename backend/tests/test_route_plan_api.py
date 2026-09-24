@@ -28,7 +28,7 @@ from app.ai.route_planning import (
 from app.auth.security import create_access_token, hash_password
 from app.database import get_db
 from app.main import app
-from app.models import AuditLog, Base, Customer, RoutePlan
+from app.models import AuditLog, Base, Customer, Driver, RoutePlan
 from app.models.enums import PreferredNotificationMethod
 
 
@@ -335,3 +335,163 @@ def test_support_agent_can_save_a_route_plan_for_a_named_customer(client, db_ses
     saved = db_session.get(RoutePlan, response.json()["route_plan_id"])
     assert saved.customer_id == customer.customer_id
     assert saved.created_by_role == "support_agent"
+
+
+# ---------------------------------------------------------------------------
+# Live tracking: POST /route-plan accepts an optional driver_id, validated
+# against the resolved customer's own fleet.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def driver_customer(db_session):
+    """A customer returned as the row itself (rather than only headers, as
+    `customer_headers` above does) so a Driver can be created in its fleet
+    and its id asserted against the saved RoutePlan."""
+    customer = Customer(
+        full_name="Driver Fleet Customer",
+        email="driver-fleet-customer@example.test",
+        phone_number="+61000000003",
+        preferred_notification_method=PreferredNotificationMethod.EMAIL,
+        password_hash=hash_password("irrelevant-not-used-here"),
+    )
+    db_session.add(customer)
+    db_session.commit()
+    db_session.refresh(customer)
+    return customer
+
+
+@pytest.fixture()
+def driver_customer_headers(driver_customer):
+    token = create_access_token(subject=driver_customer.customer_id, role="customer")
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _make_driver(db_session, *, customer_id: int, tag: str) -> Driver:
+    driver = Driver(
+        customer_id=customer_id,
+        full_name=f"Fleet Driver {tag}",
+        license_number=f"LIC-ROUTE-{tag}",
+    )
+    db_session.add(driver)
+    db_session.commit()
+    db_session.refresh(driver)
+    return driver
+
+
+def test_route_plan_accepts_a_driver_from_the_callers_own_fleet(
+    client, db_session, driver_customer, driver_customer_headers
+):
+    driver = _make_driver(db_session, customer_id=driver_customer.customer_id, tag="OWN")
+    result = RoutePlanResult(distance_km=5.0, duration_min=10.0, geometry=_GEOMETRY, warnings=[])
+    with patch("app.api.route_plan.build_route_plan", return_value=result):
+        response = client.post(
+            "/route-plan",
+            json={
+                "origin": "Sydney CBD",
+                "destination": "Parramatta",
+                "driver_id": driver.driver_id,
+            },
+            headers=driver_customer_headers,
+        )
+
+    assert response.status_code == 200
+    saved = db_session.get(RoutePlan, response.json()["route_plan_id"])
+    assert saved.driver_id == driver.driver_id
+
+
+def test_route_plan_rejects_a_driver_from_another_customers_fleet(
+    client, db_session, driver_customer, driver_customer_headers
+):
+    other_customer = Customer(
+        full_name="Other Fleet Customer",
+        email="other-fleet-customer@example.test",
+        phone_number="+61000000004",
+        preferred_notification_method=PreferredNotificationMethod.EMAIL,
+        password_hash=hash_password("irrelevant-not-used-here"),
+    )
+    db_session.add(other_customer)
+    db_session.commit()
+    db_session.refresh(other_customer)
+    other_driver = _make_driver(db_session, customer_id=other_customer.customer_id, tag="OTHER")
+
+    result = RoutePlanResult(distance_km=5.0, duration_min=10.0, geometry=_GEOMETRY, warnings=[])
+    with patch("app.api.route_plan.build_route_plan", return_value=result):
+        response = client.post(
+            "/route-plan",
+            json={
+                "origin": "Sydney CBD",
+                "destination": "Parramatta",
+                "driver_id": other_driver.driver_id,
+            },
+            headers=driver_customer_headers,
+        )
+
+    assert response.status_code == 400
+    assert "driver_id" in response.json()["detail"]
+    assert db_session.query(RoutePlan).count() == 0
+
+
+def test_route_plan_rejects_a_nonexistent_driver_id(client, db_session, driver_customer_headers):
+    result = RoutePlanResult(distance_km=5.0, duration_min=10.0, geometry=_GEOMETRY, warnings=[])
+    with patch("app.api.route_plan.build_route_plan", return_value=result):
+        response = client.post(
+            "/route-plan",
+            json={"origin": "Sydney CBD", "destination": "Parramatta", "driver_id": 999999},
+            headers=driver_customer_headers,
+        )
+
+    assert response.status_code == 400
+    assert "driver_id" in response.json()["detail"]
+    assert db_session.query(RoutePlan).count() == 0
+
+
+def test_route_plan_without_a_driver_id_saves_an_unassigned_plan(
+    client, db_session, driver_customer_headers
+):
+    result = RoutePlanResult(distance_km=5.0, duration_min=10.0, geometry=_GEOMETRY, warnings=[])
+    with patch("app.api.route_plan.build_route_plan", return_value=result):
+        response = client.post(
+            "/route-plan",
+            json={"origin": "Sydney CBD", "destination": "Parramatta"},
+            headers=driver_customer_headers,
+        )
+
+    assert response.status_code == 200
+    saved = db_session.get(RoutePlan, response.json()["route_plan_id"])
+    assert saved.driver_id is None
+
+
+def test_support_agent_driver_is_validated_against_the_named_customer(client, db_session):
+    customer = Customer(
+        full_name="Agent Driver Customer",
+        email="agent-driver-customer@example.test",
+        phone_number="+61000000005",
+        preferred_notification_method=PreferredNotificationMethod.EMAIL,
+        password_hash=hash_password("irrelevant-not-used-here"),
+    )
+    db_session.add(customer)
+    db_session.commit()
+    db_session.refresh(customer)
+    driver = _make_driver(db_session, customer_id=customer.customer_id, tag="AGENT")
+
+    agent_token = create_access_token(subject=99, role="support_agent")
+    headers = {"Authorization": f"Bearer {agent_token}"}
+
+    result = RoutePlanResult(distance_km=5.0, duration_min=10.0, geometry=_GEOMETRY, warnings=[])
+    with patch("app.api.route_plan.build_route_plan", return_value=result):
+        response = client.post(
+            "/route-plan",
+            json={
+                "origin": "Sydney CBD",
+                "destination": "Parramatta",
+                "customer_id": customer.customer_id,
+                "driver_id": driver.driver_id,
+            },
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    saved = db_session.get(RoutePlan, response.json()["route_plan_id"])
+    assert saved.driver_id == driver.driver_id
+    assert saved.customer_id == customer.customer_id

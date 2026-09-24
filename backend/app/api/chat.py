@@ -423,6 +423,12 @@ def post_chat(
                 created_by_id=current_user.user_id,
                 origin_label=route_plan_intent.origin,
                 destination_label=route_plan_intent.destination,
+                # The chat route-plan intent has no driver-selection
+                # surface -- a route planned in chat is always saved
+                # unassigned, and there is no reassignment path afterwards.
+                # Passed explicitly rather than relying on the default so
+                # this stays a deliberate choice, not an oversight.
+                driver_id=None,
             )
             saved_route_plan_id = saved_route_plan.route_plan_id
             if route_result.unavailable:
