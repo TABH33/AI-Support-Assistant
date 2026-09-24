@@ -56,3 +56,21 @@ export interface RoutePlanListItem {
   created_at: string
   completed_at: string | null
 }
+
+/** `GET /route-plans/live` row -- mirrors `LiveRoutePlan` in
+ * `backend/app/api/route_plan.py`: everything `GET /route-plans` returns
+ * plus the assigned driver and the simulated current position. The
+ * position fields are recomputed by the backend on every request and are
+ * never stored, so two polls a few seconds apart legitimately return
+ * different `current_lat`/`current_lon` for the same `route_plan_id`.
+ * `eta` is fixed at `created_at + duration_min` and does not move. */
+export interface LiveRoutePlan extends RoutePlanListItem {
+  driver_id: number | null
+  /** Joined from the driver's `full_name`; null when unassigned. */
+  driver_name: string | null
+  current_lat: number
+  current_lon: number
+  /** 0-100 inclusive, already clamped server-side. */
+  progress_percent: number
+  eta: string
+}
