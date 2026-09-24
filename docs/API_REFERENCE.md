@@ -217,7 +217,7 @@ and that save *is* customer-scoped: see `customer_id` below.
 
 **Request** (`RoutePlanRequest`)
 ```json
-{ "origin": "Sydney CBD", "destination": "Parramatta", "waypoints": null, "customer_id": null }
+{ "origin": "Sydney CBD", "destination": "Parramatta", "waypoints": null, "customer_id": null, "driver_id": null }
 ```
 - `origin`/`destination`/each `waypoints` entry accept either a place-name
   string (geocoded server-side via OpenRouteService) or
@@ -226,6 +226,13 @@ and that save *is* customer-scoped: see `customer_id` below.
   ignored for a `customer`-role caller (the saved plan always uses
   `current_user.user_id`); **required** (`400` if omitted) for a
   `support_agent`, since they have no fleet of their own to default to.
+- `driver_id` — optional. When given, it must name a `Driver` in the
+  **resolved** customer's fleet (so a `support_agent` planning on a
+  customer's behalf passes one of *that* customer's drivers), otherwise
+  `400`. A nonexistent id and another customer's id are deliberately
+  indistinguishable in the response. Omitted/`null` saves the plan
+  unassigned, which still tracks — see
+  [`GET /route-plans/live`](#get-route-planslive).
 
 **Response** (`RoutePlanResponse`) `200` — **always 200**, even on failure;
 failures are reported in-band via `unavailable`/`unavailable_reason`, never
@@ -306,6 +313,67 @@ Scoping:
 | `customer` | Only their own `customer_id`'s rows for that day, regardless of any `?customer_id=` passed |
 | `support_agent`, no `?customer_id=` | Every customer's rows for that day |
 | `support_agent`, with `?customer_id=` | Just that customer's rows |
+
+### `GET /route-plans/live`
+
+Requires `require_role("customer", "support_agent")`. Every route plan
+currently being tracked, with a **simulated** live position computed per
+request. There is no GPS or device hardware anywhere in this app — the
+position is a pure function of `(created_at, duration_min, geometry, now)`
+and is **never stored**, so two polls seconds apart legitimately return
+different coordinates for the same `route_plan_id`. See
+[ROUTE_PLANNING.md](ROUTE_PLANNING.md#live-tracking).
+
+**Query params**
+
+| Param | Meaning |
+|---|---|
+| `customer_id` | `support_agent` only — narrows to one customer; ignored for a `customer` caller |
+
+Rows are filtered to `status="active"` **and** `unavailable=false` (a
+completed plan has finished, a failed one never had a route), and a row
+whose `geometry` carries no coordinates is skipped rather than plotted at
+a made-up position. Unlike `GET /route-plans` there is no `date` filter:
+"what is moving right now" is not a per-day question, and a stale active
+plan simply pins at 100% until someone completes it.
+
+**Response** (`list[LiveRoutePlan]`) `200` — every `GET /route-plans`
+field, plus:
+```json
+[
+  {
+    "route_plan_id": 42,
+    "customer_id": 1,
+    "origin_label": "Sydney CBD",
+    "destination_label": "Parramatta",
+    "distance_km": 24.14,
+    "duration_min": 27.6,
+    "geometry": { "type": "LineString", "coordinates": [[151.21, -33.87], ...] },
+    "warnings": [ /* same shape as POST /route-plan's warnings */ ],
+    "unavailable": false,
+    "unavailable_reason": null,
+    "status": "active",
+    "created_at": "2026-09-24T09:15:00+00:00",
+    "completed_at": null,
+    "driver_id": 7,
+    "driver_name": "Alice Driver",
+    "current_lat": -33.842,
+    "current_lon": 151.021,
+    "progress_percent": 50.0,
+    "eta": "2026-09-24T09:42:36+00:00"
+  }
+]
+```
+
+| Field | Meaning |
+|---|---|
+| `driver_id` / `driver_name` | The assigned driver, joined from `drivers.full_name`; both `null` when unassigned |
+| `current_lat` / `current_lon` | Simulated position, interpolated along `geometry` by distance |
+| `progress_percent` | `clamp((now - created_at) / duration_min, 0, 1) * 100` |
+| `eta` | `created_at + duration_min` — **fixed**, it does not slide forward as time passes |
+
+Ordered newest-first (`created_at` descending). Scoping is identical to
+`GET /route-plans` above.
 
 ### `PATCH /route-plans/{route_plan_id}/complete`
 

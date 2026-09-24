@@ -415,6 +415,75 @@ returns `confidence: 1.0, escalated: false`, and writes the same
 stays `null` on this turn — there's no single route to render inline,
 unlike a successful route-plan turn.
 
+## Live tracking
+
+`GET /route-plans/live` answers "where is everything right now?" — for a
+customer watching their own plans, and for a manager watching every
+driver who is out.
+
+**There is no GPS or device hardware anywhere in this codebase** (all
+telematics data is synthetic/seeded). "Live" here means the backend
+computes a position along the route's already-known geometry, proportional
+to elapsed time since the plan was created. That is the intended design
+for this POC, not a placeholder for a later real integration.
+
+### The maths (`app/ai/route_tracking.py`)
+
+Two pure functions — no FastAPI imports, no session, no network, the same
+shape as `sample_route_points` above, and using the same
+`haversine_distance_km` (`app/geo.py`) so a tracked position and a warning
+distance always agree about how far along a route a point is:
+
+- `interpolate_position(geometry, fraction) -> (lat, lon)` walks the
+  GeoJSON `coordinates` list accumulating segment distances, then linearly
+  interpolates inside the segment the target distance lands in. It is
+  distance-weighted, not index-weighted, so the simulated vehicle moves at
+  a constant speed rather than at a rate set by how densely ORS happened
+  to sample that stretch of road. A geometry with no coordinates raises
+  `ValueError` — the endpoint filters those rows out rather than plotting
+  a vehicle at `(0, 0)`.
+- `compute_route_progress(route_plan, *, now) -> RouteProgress` gives
+  `(current_lat, current_lon, progress_percent, eta)`, with
+  `progress_percent = clamp((now - created_at) / duration_min, 0, 1) * 100`
+  and `eta = created_at + duration_min` — fixed, matching how the Routes
+  page's existing "Estimated arrival" already works. A missing or
+  non-positive `duration_min` reads as 100% complete (nothing left to
+  simulate, and no division by zero). `created_at` is normalized to UTC
+  first, because SQLite returns tz-naive values for a
+  `DateTime(timezone=True)` column.
+
+**Nothing is stored.** A position is recomputed on every read, which means
+no background job or scheduler (this app has none), nothing to keep in
+sync, and correct behavior for free across a backend restart. There is
+also no historical trail or replay — only the current position exists.
+
+### Driver assignment
+
+`route_plans.driver_id` (nullable FK → `drivers.driver_id`) is set once,
+at `POST /route-plan` time, and validated by `_resolve_driver_id` in
+`app/api/route_plan.py` against the **resolved** customer's own fleet —
+`400`, with a nonexistent id and another customer's id deliberately
+indistinguishable. `save_route_plan(..., driver_id=None)` persists it; the
+chat route-plan intent passes `driver_id=None` explicitly, since chat has
+no driver-selection surface. There is no reassignment endpoint, matching
+how origin/destination are also immutable after creation.
+
+### Frontend (`/tracking`)
+
+`frontend/src/pages/LiveTracking.tsx` polls `GET /route-plans/live` every
+5 seconds with a plain `setInterval` cleared on unmount — polling, not a
+WebSocket, because every other page in this app fetches the same way and
+push delivery is explicitly out of scope. It renders
+`frontend/src/components/LiveTrackingMap.tsx` (every tracked route's
+polyline plus a color-coded marker at its current position, on the same
+`react-leaflet` primitives `RouteMap` uses) beside a list giving the
+driver name or "Unassigned", origin → destination, a progress bar, and the
+ETA. A `support_agent` gets the same customer-ID filter input the Routes
+page already has; a customer sees only their own. The plan form on the
+Routes page gains an optional "Driver" `<select>` populated from
+`GET /drivers`, narrowed client-side to the typed customer ID for a
+`support_agent`.
+
 ## Frontend
 
 `frontend/src/pages/Routes.tsx` is the route-selector + daily-tracking
@@ -518,11 +587,16 @@ Every external call (`httpx.get`/`httpx.post` for ORS and Open-Meteo, and
 required. Backend tests: `test_geo.py`, `test_openrouteservice.py`,
 `test_open_meteo.py`, `test_datasource.py` (risk-zone lookup),
 `test_route_planning.py` + `test_route_planning_risk_zones.py` +
-`test_build_route_plan.py` (orchestration), `test_route_plan_api.py`,
-`test_chat_api.py` (intent routing). Frontend: `RouteMap.test.tsx` (mocks
+`test_build_route_plan.py` (orchestration), `test_route_tracking.py`
+(deterministic live-position maths against a fixed `now`),
+`test_route_plan_api.py` (including `driver_id` validation),
+`test_route_plans_live_api.py` (live scoping, filtering and computed
+fields), `test_chat_api.py` (intent routing). Frontend:
+`RouteMap.test.tsx` and `LiveTrackingMap.test.tsx` (both mock
 `react-leaflet` entirely — jsdom can't render real Leaflet DOM),
-`ChatWidget.test.tsx` (mocks `RouteMap`, including a regression test for
-the sticky-panel bug above).
+`LiveTracking.test.tsx` (mocked polling fetch), `ChatWidget.test.tsx`
+(mocks `RouteMap`, including a regression test for the sticky-panel bug
+above).
 
 To exercise the real, live pipeline (real ORS, real Open-Meteo, real
 Ollama) rather than the mocked test suite, see

@@ -229,6 +229,7 @@ routes.
 | `customer_id` | int, FK → Customer | the plan's owner; always set, even when a `support_agent` planned it on the customer's behalf |
 | `created_by_role` | string(32) | `"customer"` / `"support_agent"` — who actually submitted the plan, same free-string convention as `AuditLog.actor_role` |
 | `created_by_id` | int | the submitting user's id; differs from `customer_id` when a `support_agent` plans on a customer's behalf |
+| `driver_id` | int, FK → Driver, nullable | optional driver assignment used by live tracking (`GET /route-plans/live`); `null` means "Unassigned". Set once, at `POST /route-plan` time — there is deliberately no reassignment path, matching how origin/destination are also immutable after creation. Validated against the plan's own `customer_id` fleet on write |
 | `origin_label` / `destination_label` | string(255) | display labels — the place name, or `"{lat},{lon}"` when raw coordinates were given |
 | `distance_km` / `duration_min` | numeric(10,2), nullable | `null` when `unavailable=true` |
 | `geometry` | JSON, nullable | GeoJSON `LineString`; `null` when `unavailable=true` |
