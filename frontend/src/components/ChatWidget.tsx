@@ -364,7 +364,7 @@ export function ChatWidget() {
   const activeRoutePlan = lastMessage?.routePlan
 
   return (
-    <div className="fixed bottom-4 right-4 z-50 flex flex-col items-end">
+    <div className="fixed bottom-4 right-4 z-[9999] flex flex-col items-end">
       {isOpen && (
         <div
           role="dialog"
