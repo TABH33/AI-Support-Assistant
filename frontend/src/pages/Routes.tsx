@@ -250,7 +250,15 @@ export default function RoutesPage() {
             <input
               id="route-plan-customer-id"
               value={planCustomerId}
-              onChange={(event) => setPlanCustomerId(event.target.value)}
+              onChange={(event) => {
+                // Changing the customer invalidates any previously-selected
+                // driver -- `selectableDrivers` re-filters to the new
+                // customer's fleet, so a stale `driverId` for the old
+                // customer would otherwise be silently submitted and
+                // rejected by the backend's `_resolve_driver_id` check.
+                setPlanCustomerId(event.target.value)
+                setDriverId('')
+              }}
               className="mt-1 w-24 rounded border border-gray-300 px-2 py-1 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
             />
           </div>

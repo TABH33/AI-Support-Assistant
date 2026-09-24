@@ -348,4 +348,35 @@ describe('RoutesPage', () => {
     })
     expect(screen.getByRole('option', { name: 'Bob Driver' })).toBeInTheDocument()
   })
+
+  it('resets the driver dropdown to Unassigned when the support agent changes the Customer ID', async () => {
+    loginAsSupportAgent()
+    mockRoutesFetch([])
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByRole('option', { name: 'Alice Driver' })).toBeInTheDocument()
+    })
+
+    const driverSelect = screen.getByLabelText(/^driver$/i) as HTMLSelectElement
+    fireEvent.change(driverSelect, { target: { value: '11' } })
+    expect(driverSelect.value).toBe('11')
+
+    fireEvent.change(screen.getByLabelText(/^customer id$/i), { target: { value: '200' } })
+
+    expect(driverSelect.value).toBe('')
+
+    fireEvent.change(screen.getByLabelText(/origin/i), { target: { value: 'Sydney CBD' } })
+    fireEvent.change(screen.getByLabelText(/destination/i), { target: { value: 'Bondi Beach' } })
+    fireEvent.click(screen.getByRole('button', { name: /plan route/i }))
+
+    await waitFor(() => {
+      const postCall = (fetch as unknown as Mock).mock.calls.find(
+        ([url, options]) => options?.method === 'POST' && (url as string).includes('/route-plan')
+      )
+      expect(postCall).toBeTruthy()
+      expect(JSON.parse(postCall![1].body as string)).not.toHaveProperty('driver_id')
+    })
+  })
 })
