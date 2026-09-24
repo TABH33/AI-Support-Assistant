@@ -40,6 +40,14 @@ class RoutePlan(Base):
     # AuditLog.actor_role (see app.security.audit).
     created_by_role: Mapped[str] = mapped_column(String(32), nullable=False)
     created_by_id: Mapped[int] = mapped_column(nullable=False)
+    # Optional: a route plan with no assigned driver still tracks (shown as
+    # "Unassigned" by the live-tracking UI). Set once, at POST /route-plan
+    # time -- there is deliberately no reassignment path, matching how
+    # origin/destination are also immutable after creation. See
+    # docs/superpowers/specs/2026-09-24-live-tracking-design.md.
+    driver_id: Mapped[int | None] = mapped_column(
+        ForeignKey("drivers.driver_id"), nullable=True
+    )
     origin_label: Mapped[str] = mapped_column(String(255), nullable=False)
     destination_label: Mapped[str] = mapped_column(String(255), nullable=False)
     distance_km: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)

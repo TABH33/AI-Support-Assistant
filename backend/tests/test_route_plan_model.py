@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.auth.security import hash_password
-from app.models import Base, Customer, RoutePlan
+from app.models import Base, Customer, Driver, RoutePlan
 from app.models.enums import PreferredNotificationMethod, RoutePlanStatus
 
 
@@ -96,3 +96,53 @@ def test_route_plan_can_be_marked_completed(db_session):
 
     assert route_plan.status == RoutePlanStatus.COMPLETED
     assert route_plan.completed_at is not None
+
+
+def _make_driver(db_session: Session, *, customer: Customer) -> Driver:
+    driver = Driver(
+        customer_id=customer.customer_id,
+        full_name="Model Test Driver",
+        license_number="LIC-MODEL-0001",
+    )
+    db_session.add(driver)
+    db_session.commit()
+    db_session.refresh(driver)
+    return driver
+
+
+def test_route_plan_driver_id_defaults_to_none(db_session):
+    customer = _make_customer(db_session)
+    route_plan = RoutePlan(
+        customer_id=customer.customer_id,
+        created_by_role="customer",
+        created_by_id=customer.customer_id,
+        origin_label="Sydney CBD",
+        destination_label="Parramatta",
+        unavailable=False,
+        warnings=[],
+    )
+    db_session.add(route_plan)
+    db_session.commit()
+    db_session.refresh(route_plan)
+
+    assert route_plan.driver_id is None
+
+
+def test_route_plan_round_trips_an_assigned_driver_id(db_session):
+    customer = _make_customer(db_session)
+    driver = _make_driver(db_session, customer=customer)
+    route_plan = RoutePlan(
+        customer_id=customer.customer_id,
+        created_by_role="customer",
+        created_by_id=customer.customer_id,
+        driver_id=driver.driver_id,
+        origin_label="Sydney CBD",
+        destination_label="Parramatta",
+        unavailable=False,
+        warnings=[],
+    )
+    db_session.add(route_plan)
+    db_session.commit()
+    db_session.refresh(route_plan)
+
+    assert route_plan.driver_id == driver.driver_id
