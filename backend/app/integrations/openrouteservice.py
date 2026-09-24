@@ -26,6 +26,20 @@ _GEOCODE_URL = "https://api.openrouteservice.org/geocode/search"
 _DIRECTIONS_URL = "https://api.openrouteservice.org/v2/directions/driving-car/geojson"
 _DEFAULT_TIMEOUT_SECONDS = 15.0
 
+#: This deployment's demo/focus region (Sydney CBD -- same coordinates as
+#: app/seed/generator.py's DEMO_CORRIDORS). Passed as Pelias's
+#: `focus.point.*` bias so an ambiguous short place name resolves to the
+#: intended local match instead of a same-named place anywhere else in the
+#: world. Live-discovered bug this fixes: bare "Bondi" (no "Beach"/"Sydney"
+#: qualifier) geocoded to a location near Paris, France -- ORS's directions
+#: API then correctly rejected routing a driving-car from Sydney to France
+#: with a 400, which surfaced to the user as an unhelpful generic "route
+#: data unavailable, try again shortly" (retrying gives the identical wrong
+#: result every time). This is a BIAS, not a restriction: Pelias still
+#: returns a genuine distant match when nothing closer exists.
+_GEOCODE_FOCUS_LAT = -33.8688
+_GEOCODE_FOCUS_LON = 151.2093
+
 
 class RouteServiceError(RuntimeError):
     """Base exception for this module's failures."""
@@ -84,7 +98,12 @@ def geocode(place_name: str, *, timeout: float = _DEFAULT_TIMEOUT_SECONDS) -> Co
     geocoding endpoint. Raises GeocodingError if no match is found, or
     RouteServiceRequestError if ORS_API_KEY is not configured."""
     _require_api_key()
-    params = {"text": place_name, "size": 1}
+    params = {
+        "text": place_name,
+        "size": 1,
+        "focus.point.lat": _GEOCODE_FOCUS_LAT,
+        "focus.point.lon": _GEOCODE_FOCUS_LON,
+    }
     headers = {"Authorization": settings.ors_api_key}
 
     try:

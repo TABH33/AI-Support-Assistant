@@ -102,6 +102,26 @@ def test_geocode_sends_api_key_via_header_not_query_param():
         assert kwargs["headers"]["Authorization"] == settings.ors_api_key
 
 
+def test_geocode_biases_toward_sydney_to_disambiguate_short_place_names():
+    """Live-discovered bug: bare "Bondi" (no "Beach"/"Sydney" qualifier)
+    geocoded to a place near Paris, France instead of Bondi Beach, Sydney,
+    causing OpenRouteService's directions call to correctly reject routing
+    a driving-car across oceans -- surfaced to the user as an unhelpful
+    "route data unavailable, try again shortly". Fixed with a focus-point
+    bias toward this deployment's Sydney demo region."""
+    with patch("app.integrations.openrouteservice.httpx.get") as mock_get:
+        mock_get.return_value = _mock_response(
+            _FAKE_GEOCODE_REQUEST,
+            json_body={"features": [{"geometry": {"coordinates": [151.2093, -33.8688]}}]},
+        )
+
+        geocode("Bondi")
+
+        args, kwargs = mock_get.call_args
+        assert kwargs["params"]["focus.point.lat"] == -33.8688
+        assert kwargs["params"]["focus.point.lon"] == 151.2093
+
+
 def test_geocode_raises_geocoding_error_on_no_match():
     with patch("app.integrations.openrouteservice.httpx.get") as mock_get:
         mock_get.return_value = _mock_response(_FAKE_GEOCODE_REQUEST, json_body={"features": []})
