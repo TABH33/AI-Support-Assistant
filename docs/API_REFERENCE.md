@@ -232,7 +232,7 @@ and that save *is* customer-scoped: see `customer_id` below.
   `400`. A nonexistent id and another customer's id are deliberately
   indistinguishable in the response. Omitted/`null` saves the plan
   unassigned, which still tracks — see
-  [`GET /route-plans/live`](#get-route-plans-live).
+  [`GET /route-plans/live`](#get-route-planslive).
 
 **Response** (`RoutePlanResponse`) `200` — **always 200**, even on failure;
 failures are reported in-band via `unavailable`/`unavailable_reason`, never
