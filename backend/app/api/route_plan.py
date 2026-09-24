@@ -2,7 +2,10 @@
 weather and historical-risk-zone warnings along it, persists the result as
 a `RoutePlan` row, and returns one structured result.
 `GET /route-plans` and `PATCH /route-plans/{id}/complete` (Tasks 3-4) list
-and complete those saved rows. See
+and complete those saved rows. `GET /route-plans/live` returns the
+currently-active ones with a simulated live position computed on the fly
+(nothing is stored -- see `app/ai/route_tracking.py` and
+docs/superpowers/specs/2026-09-24-live-tracking-design.md). See
 docs/superpowers/specs/2026-08-26-route-planning-warnings-design.md and
 docs/superpowers/specs/2026-09-18-route-selector-and-daily-tracking-design.md.
 
@@ -23,6 +26,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.ai.route_planning import RoutePlanResult, Warning, build_route_plan, save_route_plan
+from app.ai.route_tracking import compute_route_progress
 from app.auth.dependencies import CurrentUser, require_role
 from app.database import get_db
 from app.integrations.openrouteservice import Coordinates
@@ -101,6 +105,23 @@ class RoutePlanListItem(BaseModel):
     status: str
     created_at: datetime
     completed_at: datetime | None
+
+
+class LiveRoutePlan(RoutePlanListItem):
+    """`GET /route-plans/live` row: everything `GET /route-plans` returns,
+    plus the assigned driver and the simulated current position. The
+    position fields are recomputed on every request from
+    `(created_at, duration_min, geometry, now)` and are never persisted."""
+
+    driver_id: int | None
+    #: Joined from `Driver.full_name`; None when the plan is unassigned.
+    driver_name: str | None
+    current_lat: float
+    current_lon: float
+    progress_percent: float
+    #: `created_at + duration_min` -- fixed, so it does not slide forward
+    #: as time passes (same behavior as Routes.tsx's "Estimated arrival").
+    eta: datetime
 
 
 class RoutePlanCompleteResponse(BaseModel):
@@ -203,6 +224,17 @@ def _row_to_list_item(row: RoutePlan) -> RoutePlanListItem:
     )
 
 
+def _geometry_points(geometry: dict | None) -> list:
+    """The GeoJSON LineString coordinate list of a saved plan, or `[]` when
+    there is nothing to interpolate a position along (no geometry at all,
+    or an empty/malformed `coordinates`). `GET /route-plans/live` skips
+    those rows rather than inventing a position for them."""
+    if not isinstance(geometry, dict):
+        return []
+    coordinates = geometry.get("coordinates")
+    return coordinates if isinstance(coordinates, list) else []
+
+
 @router.post("/route-plan", response_model=RoutePlanResponse)
 def post_route_plan(
     payload: RoutePlanRequest,
@@ -268,6 +300,64 @@ def get_route_plans(
 
     rows = query.order_by(RoutePlan.created_at.desc()).all()
     return [_row_to_list_item(row) for row in rows]
+
+
+@router.get("/route-plans/live", response_model=list[LiveRoutePlan])
+def get_live_route_plans(
+    customer_id: int | None = Query(None),
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(_allowed_roles),
+) -> list[LiveRoutePlan]:
+    """Every route plan currently being tracked, with a simulated live
+    position computed per request.
+
+    Scoping is identical to `GET /route-plans` above: a `customer` caller
+    only ever sees their own rows (any `?customer_id=` is ignored), a
+    `support_agent` sees every customer's unless narrowed by
+    `?customer_id=`.
+
+    Filtered to `status=ACTIVE AND unavailable=False` -- a completed plan
+    has finished and a failed one never had a route, so neither has
+    anything live to show. Unlike `GET /route-plans` there is deliberately
+    no date filter: "what is moving right now" is not a per-day question,
+    and a stale active plan simply pins at 100% progress until someone
+    marks it complete.
+
+    Rows whose geometry carries no coordinates are skipped rather than
+    plotted at a made-up position (see `_geometry_points`).
+    """
+    query = (
+        db.query(RoutePlan, Driver)
+        .outerjoin(Driver, RoutePlan.driver_id == Driver.driver_id)
+        .filter(RoutePlan.status == RoutePlanStatus.ACTIVE, RoutePlan.unavailable.is_(False))
+    )
+
+    if current_user.role == "customer":
+        query = query.filter(RoutePlan.customer_id == current_user.user_id)
+    elif customer_id is not None:
+        query = query.filter(RoutePlan.customer_id == customer_id)
+
+    # One `now` for the whole response, so two rows in the same payload are
+    # never computed against clocks a few milliseconds apart.
+    now = datetime.now(timezone.utc)
+
+    live: list[LiveRoutePlan] = []
+    for row, driver in query.order_by(RoutePlan.created_at.desc()).all():
+        if not _geometry_points(row.geometry):
+            continue
+        progress = compute_route_progress(row, now=now)
+        live.append(
+            LiveRoutePlan(
+                **_row_to_list_item(row).model_dump(),
+                driver_id=row.driver_id,
+                driver_name=driver.full_name if driver is not None else None,
+                current_lat=progress.current_lat,
+                current_lon=progress.current_lon,
+                progress_percent=progress.progress_percent,
+                eta=progress.eta,
+            )
+        )
+    return live
 
 
 @router.patch("/route-plans/{route_plan_id}/complete", response_model=RoutePlanCompleteResponse)
