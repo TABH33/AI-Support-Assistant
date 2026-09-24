@@ -48,6 +48,16 @@ function formatDistanceDuration(distanceKm: number | null, durationMin: number |
   return `${distance} · ${duration}`
 }
 
+/** "now" + `durationMin`, formatted as a local clock time -- the estimated
+ * arrival time for a route just planned (assumes departure now, since this
+ * app has no separate "planned departure time" concept). Em dash if the
+ * duration is unknown (an `unavailable` plan). */
+function formatEstimatedArrival(durationMin: number | null): string {
+  if (durationMin === null) return '—'
+  const eta = new Date(Date.now() + durationMin * 60_000)
+  return eta.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+}
+
 /** Per-warning severity badge + description, shown under a route's
  * summary line so a manager can see whether a route's warnings were
  * actually severe, not just how many there were. */
@@ -220,7 +230,16 @@ export default function RoutesPage() {
               {planResult.unavailable_message ?? 'Route data is currently unavailable.'}
             </p>
           ) : (
-            <RouteMap routePlan={planResult} />
+            <>
+              <p data-testid="plan-result-stats" className="mb-2 text-sm text-gray-700 dark:text-gray-300">
+                {formatDistanceDuration(planResult.distance_km, planResult.duration_min)}
+                {' · Estimated arrival '}
+                <span className="font-semibold text-gray-900 dark:text-white">
+                  {formatEstimatedArrival(planResult.duration_min)}
+                </span>
+              </p>
+              <RouteMap routePlan={planResult} />
+            </>
           )}
         </div>
       )}

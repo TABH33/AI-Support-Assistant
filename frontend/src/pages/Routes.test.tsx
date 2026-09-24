@@ -177,6 +177,46 @@ describe('RoutesPage', () => {
     expect(postCall).toBeTruthy()
   })
 
+  it('shows distance, duration, and estimated arrival time after planning a route', async () => {
+    loginAsCustomer()
+    mockRoutesFetch([])
+
+    renderPage()
+
+    await waitFor(() => {
+      expect(screen.getByText('No active routes today.')).toBeInTheDocument()
+    })
+
+    // mockRoutesFetch's POST /route-plan fixture returns duration_min: 10.0
+    // -- compute the expected ETA window from the real clock around the
+    // call, rather than faking timers (which fights Testing Library's own
+    // use of timers inside `waitFor`).
+    const before = new Date(Date.now() + 10 * 60_000)
+
+    fireEvent.change(screen.getByLabelText(/origin/i), { target: { value: 'Sydney CBD' } })
+    fireEvent.change(screen.getByLabelText(/destination/i), { target: { value: 'Bondi Beach' } })
+    fireEvent.click(screen.getByRole('button', { name: /plan route/i }))
+
+    await waitFor(() => {
+      expect(screen.getByTestId('plan-result-stats')).toBeInTheDocument()
+    })
+
+    const after = new Date(Date.now() + 10 * 60_000)
+    const stats = screen.getByTestId('plan-result-stats')
+    expect(stats).toHaveTextContent('5.0 km')
+    expect(stats).toHaveTextContent('10 min')
+    expect(stats).toHaveTextContent('Estimated arrival')
+    // The ETA must be one of the (at most a couple of) plausible
+    // minute-formatted values between when the request started and when
+    // the result rendered.
+    const possibleEtas = new Set<string>()
+    for (let ms = before.getTime(); ms <= after.getTime(); ms += 1000) {
+      possibleEtas.add(new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }))
+    }
+    const matchesAnyPossibleEta = [...possibleEtas].some((eta) => stats.textContent?.includes(eta))
+    expect(matchesAnyPossibleEta).toBe(true)
+  })
+
   it('shows a customer-ID filter only for a support_agent caller', async () => {
     loginAsSupportAgent()
     mockRoutesFetch([])
