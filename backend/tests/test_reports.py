@@ -27,12 +27,26 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
-from app.ai.reports import generate_end_of_day_report, generate_start_of_day_report
+from app.ai.reports import (
+    _format_route_risk_warnings,
+    generate_end_of_day_report,
+    generate_start_of_day_report,
+)
 from app.auth.security import create_access_token, hash_password
 from app.database import get_db
 from app.datasources.synthetic import SyntheticDataSource
 from app.main import app
-from app.models import Base, Customer, Device, Driver, DrivingEvent, SupportAgent, Trip, Vehicle
+from app.models import (
+    Base,
+    Customer,
+    Device,
+    Driver,
+    DrivingEvent,
+    RoutePlan,
+    SupportAgent,
+    Trip,
+    Vehicle,
+)
 from app.models.enums import (
     AccessLevel,
     BatteryStatus,
@@ -461,3 +475,85 @@ def test_customer_role_forbidden_from_other_roles_endpoint_is_not_applicable_but
 
     assert client.post("/reports/start-of-day", json={}, headers=headers).status_code == 403
     assert client.post("/reports/end-of-day", json={}, headers=headers).status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# demo-routes-and-escalation: route-risk warning lines name the driver
+# ---------------------------------------------------------------------------
+
+_HIGH_RISK_WARNING = {
+    "location": {"lat": -33.85, "lon": 151.1},
+    "distance_from_origin_km": 10.0,
+    "type": "risk_zone",
+    "severity": "high",
+    "description": "16 driving events recorded within 500m of this point (7 harsh braking).",
+}
+
+
+def _transient_route_plan(*, driver_id: int | None, warnings: list) -> RoutePlan:
+    """Never added to a session -- `_format_route_risk_warnings` only reads
+    attributes, so an in-memory row is enough for a pure formatter test."""
+    return RoutePlan(
+        customer_id=1,
+        created_by_role="support_agent",
+        created_by_id=1,
+        driver_id=driver_id,
+        origin_label="Sydney CBD",
+        destination_label="Parramatta",
+        warnings=warnings,
+        unavailable=False,
+    )
+
+
+def test_route_risk_warning_line_names_the_assigned_driver():
+    driver = Driver(driver_id=7, customer_id=1, full_name="Alice Driver", license_number="LIC-X")
+
+    text = _format_route_risk_warnings(
+        [_transient_route_plan(driver_id=7, warnings=[_HIGH_RISK_WARNING])], {7: driver}
+    )
+
+    assert "  - Sydney CBD -> Parramatta (driver: Alice Driver): 1 warning(s), 1 high-severity" in text
+
+
+def test_route_risk_warning_line_says_unassigned_when_no_driver():
+    text = _format_route_risk_warnings(
+        [_transient_route_plan(driver_id=None, warnings=[_HIGH_RISK_WARNING])], {}
+    )
+
+    assert "  - Sydney CBD -> Parramatta (driver: Unassigned): 1 warning(s), 1 high-severity" in text
+
+
+def _add_flagged_route_plan(db_session, fleet) -> None:
+    db_session.add(
+        RoutePlan(
+            customer_id=fleet["customer"].customer_id,
+            created_by_role="customer",
+            created_by_id=fleet["customer"].customer_id,
+            driver_id=fleet["driver1"].driver_id,
+            origin_label="Sydney CBD",
+            destination_label="Parramatta",
+            warnings=[_HIGH_RISK_WARNING],
+            unavailable=False,
+            created_at=_NOW,
+        )
+    )
+    db_session.commit()
+
+
+@pytest.mark.parametrize("generator", [generate_start_of_day_report, generate_end_of_day_report])
+def test_both_reports_name_the_driver_on_a_flagged_route(db_session, fleet_a, generator):
+    _add_flagged_route_plan(db_session, fleet_a)
+
+    with patch("app.ai.reports.chat_completion", return_value="summary") as mock_chat:
+        generator(
+            fleet_a["customer"].customer_id,
+            db=db_session,
+            data_source=SyntheticDataSource(db_session),
+            now=_NOW,
+        )
+
+    context = mock_chat.call_args[0][0][1]["content"]
+    assert (
+        f"  - Sydney CBD -> Parramatta (driver: {fleet_a['driver1'].full_name}): "
+        "1 warning(s), 1 high-severity"
+    ) in context

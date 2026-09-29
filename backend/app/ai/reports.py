@@ -78,6 +78,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
 from app.ai.llm import chat_completion
+from app.ai.route_planning import route_plan_driver_label
 from app.datasources.base import TelematicsDataSource
 from app.datasources.synthetic import SyntheticDataSource
 from app.models.device import Device
@@ -236,11 +237,23 @@ def _route_plans_for_today(
     )
 
 
-def _format_route_risk_warnings(route_plans: list[RoutePlan]) -> str:
+def _format_route_risk_warnings(
+    route_plans: list[RoutePlan], drivers_by_id: dict[int, Driver]
+) -> str:
     """Weather/risk-zone warnings recorded against today's planned routes
     (see `app.ai.route_planning.build_route_plan`'s `Warning` type) -- the
     one report section sourced from the route-planning feature's own risk
-    signals, rather than raw `DrivingEvent` counts."""
+    signals, rather than raw `DrivingEvent` counts.
+
+    Each flagged route's line names who was driving it (or "Unassigned"),
+    looked up in `drivers_by_id` -- the SAME per-customer map the calling
+    report generator already batch-fetched once via
+    `ds.list_drivers(customer_id)` for its other sections, so naming drivers
+    here costs no extra query. That map covers every driver a route can
+    carry: `RoutePlan.driver_id` is validated against the plan's own
+    customer's fleet on write (`_resolve_driver_id` in
+    app/api/route_plan.py), and `route_plans` is already filtered to that
+    same customer (`_route_plans_for_today`)."""
     if not route_plans:
         return "(no routes planned today)"
     flagged = [rp for rp in route_plans if rp.warnings]
@@ -249,8 +262,10 @@ def _format_route_risk_warnings(route_plans: list[RoutePlan]) -> str:
     lines = [f"{len(flagged)} of {len(route_plans)} route(s) planned today carry warnings:"]
     for route_plan in flagged:
         high_severity = sum(1 for w in route_plan.warnings if w.get("severity") == "high")
+        driver_label = route_plan_driver_label(route_plan.driver_id, drivers_by_id)
         lines.append(
-            f"  - {route_plan.origin_label} -> {route_plan.destination_label}: "
+            f"  - {route_plan.origin_label} -> {route_plan.destination_label} "
+            f"(driver: {driver_label}): "
             f"{len(route_plan.warnings)} warning(s)"
             f"{f', {high_severity} high-severity' if high_severity else ''}"
         )
@@ -373,7 +388,7 @@ def generate_start_of_day_report(
         f"{_format_driving_events(unresolved_events, empty_label='(no trips currently in progress)')}\n\n"
         f"Planned routes for today:\n{_format_planned_routes(planned_trips, drivers_by_id, vehicles_by_id)}\n\n"
         f"Route risk/weather warnings for today's planned routes:\n"
-        f"{_format_route_risk_warnings(todays_route_plans)}"
+        f"{_format_route_risk_warnings(todays_route_plans, drivers_by_id)}"
     )
 
     return _generate_report(f"Start-of-day fleet report for customer {customer_id}", context_block)
@@ -413,7 +428,7 @@ def generate_end_of_day_report(
         f"Driver performance summary:\n"
         f"{_format_driver_performance(today_trips, events_by_trip, drivers_by_id)}\n\n"
         f"Route risk/weather warnings for today's planned routes:\n"
-        f"{_format_route_risk_warnings(todays_route_plans)}"
+        f"{_format_route_risk_warnings(todays_route_plans, drivers_by_id)}"
     )
 
     return _generate_report(f"End-of-day fleet report for customer {customer_id}", context_block)

@@ -30,6 +30,7 @@ from app.integrations.openrouteservice import (
 from app.models.enums import RoutePlanStatus
 from app.timeutil import site_day_bounds, site_today
 from app.models.route_plan import RoutePlan
+from app.models.telematics import Driver
 
 logger = logging.getLogger(__name__)
 
@@ -469,13 +470,37 @@ def summarize_route_plan(
     return chat_completion(messages)
 
 
+def route_plan_driver_label(driver_id: int | None, drivers_by_id: dict[int, Driver]) -> str:
+    """Who was driving a route plan, for a human-readable summary line:
+    "Unassigned" when no driver was set (`RoutePlan.driver_id` is optional),
+    the driver's `full_name` when found in `drivers_by_id`, or
+    `"driver <id>"` if the id isn't in the map (mirrors
+    `app.ai.reports._format_planned_routes`' own fallback). Shared by
+    `summarize_todays_routes` below and `app.ai.reports`'s route-risk
+    section so both surfaces label drivers identically."""
+    if driver_id is None:
+        return "Unassigned"
+    driver = drivers_by_id.get(driver_id)
+    return driver.full_name if driver is not None else f"driver {driver_id}"
+
+
 def summarize_todays_routes(db: Session, *, customer_id: int | None) -> str:
     """Deterministic (no LLM call) summary of today's RoutePlan rows, for
     the chat "today's routes" intent (app/api/chat.py's
     _detect_todays_routes_intent). customer_id=None means fleet-wide (a
     support_agent asking without narrowing to one customer) -- mirrors
     every other support_agent-facing list endpoint's unscoped-means-all
-    convention (see GET /route-plans, GET /tickets).
+    convention (see GET /route-plans, GET /tickets). NOTE: the chat intent
+    itself always passes the chat session's own customer_id (see the
+    SECURITY FIX comment in app/api/chat.py); this function's None branch
+    is never reached from chat.
+
+    Each route line names who was driving it ("driver: Alice Driver", or
+    "driver: Unassigned"). Driver names are fetched with ONE batched
+    `Driver.driver_id IN (...)` query per call -- never one query per row --
+    and skipped entirely when no route has a driver. The ids come only from
+    the already customer-scoped route rows above, so this lookup can never
+    surface a driver outside that scope.
 
     Deliberately does NOT call the LLM: the numbers here (warning counts,
     severities) come straight from stored RoutePlan rows, and rewriting
@@ -494,6 +519,16 @@ def summarize_todays_routes(db: Session, *, customer_id: int | None) -> str:
     if not routes:
         return "No routes have been planned today."
 
+    driver_ids = sorted({r.driver_id for r in routes if r.driver_id is not None})
+    drivers_by_id: dict[int, Driver] = (
+        {
+            driver.driver_id: driver
+            for driver in db.query(Driver).filter(Driver.driver_id.in_(driver_ids)).all()
+        }
+        if driver_ids
+        else {}
+    )
+
     active_count = sum(1 for r in routes if r.status == RoutePlanStatus.ACTIVE)
     completed_count = len(routes) - active_count
 
@@ -503,7 +538,11 @@ def summarize_todays_routes(db: Session, *, customer_id: int | None) -> str:
     ]
     for route in routes:
         status_label = "active" if route.status == RoutePlanStatus.ACTIVE else "completed"
-        detail = f"- {route.origin_label} -> {route.destination_label} ({status_label})"
+        driver_label = route_plan_driver_label(route.driver_id, drivers_by_id)
+        detail = (
+            f"- {route.origin_label} -> {route.destination_label} "
+            f"({status_label}, driver: {driver_label})"
+        )
         if route.unavailable:
             detail += ": route data was unavailable when planned"
         elif route.warnings:
