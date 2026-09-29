@@ -34,6 +34,7 @@ driver_id/trip_id/vehicle_id they pass:
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -43,7 +44,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Query as SAQuery, Session
 
 from app.ai.chat_service import answer_query
-from app.ai.escalation import handle_answer
+from app.ai.escalation import get_or_create_escalation_ticket, handle_answer
 from app.ai.reports import generate_end_of_day_report, generate_start_of_day_report
 from app.ai.retrieval import retrieve_context
 from app.ai.route_planning import (
@@ -57,7 +58,9 @@ from app.ai.route_planning import (
 from app.api.route_plan import RoutePlanResponse, route_plan_result_to_response
 from app.auth.dependencies import CurrentUser, require_role
 from app.database import get_db
+from app.integrations.email import send_escalation_email
 from app.models.chat import ChatMessage, ChatSession, Notification, SupportTicket
+from app.models.customer import Customer
 from app.models.device import Device
 from app.models.enums import ChatMessageRole, PreferredNotificationMethod, Priority, TicketStatus
 from app.repositories.chat import create_chat_session, create_notification, create_support_ticket
@@ -69,6 +72,8 @@ from app.security.audit import (
 )
 
 router = APIRouter(tags=["chat"])
+
+logger = logging.getLogger(__name__)
 
 _allowed_roles = require_role("customer", "support_agent")
 
@@ -711,14 +716,11 @@ def list_notifications(
 # Thumbs-down idempotency (the brief's core requirement): `ChatSession 1 ->
 # 0..1 SupportTicket` is a DB-level UNIQUE constraint on
 # `SupportTicket.chat_session_id` (Task 4's schema; see Task 8's
-# `create_support_ticket` docstring). Task 14's `handle_answer` never has to
-# worry about a duplicate because a session is only auto-escalated once (at
-# most one low-confidence answer triggers it, and nothing re-runs
-# `handle_answer` for an already-escalated session). Feedback is different:
-# a customer can press thumbs-down on the same message repeatedly (double
-# click, retry after a flaky network response, etc.), and a session's
-# assistant answer might ALREADY have been auto-escalated by Task 14 before
-# the customer ever presses thumbs-down. Both cases must be a no-op, not an
+# `create_support_ticket` docstring). A customer can press thumbs-down on
+# the same message repeatedly (double click, retry after a flaky network
+# response, etc.), and a session might ALREADY have a ticket because the
+# customer accepted an escalation offer (`POST /chat/messages/{id}/escalate`,
+# below) before ever pressing thumbs-down. Both cases must be a no-op, not an
 # `IntegrityError` -- so `_get_or_create_feedback_escalation_ticket` always
 # SELECTs for an existing ticket first (never blindly calls
 # `create_support_ticket` and catches the exception).
@@ -748,7 +750,7 @@ class ChatMessageFeedbackResponse(BaseModel):
 
 #: Message stored on the `Notification` created when a thumbs-down triggers
 #: an escalation ticket -- mirrors `app.ai.escalation._ESCALATION_NOTIFICATION_MESSAGE`'s
-#: wording/purpose for the low-confidence auto-escalation path.
+#: wording/purpose for the opt-in escalation path.
 _FEEDBACK_ESCALATION_NOTIFICATION_MESSAGE = (
     "Your negative feedback on an AI assistant response has been escalated "
     "to a support agent. A support ticket has been created and an agent "
@@ -761,8 +763,9 @@ def _get_or_create_feedback_escalation_ticket(
 ) -> SupportTicket:
     """Idempotently escalate a thumbs-down assistant response to a human
     support ticket, reusing Task 8's `create_support_ticket`/
-    `create_notification` (the same repository functions Task 14's
-    `handle_answer` uses for the low-confidence auto-escalation path).
+    `create_notification` (the same repository functions
+    `app.ai.escalation.get_or_create_escalation_ticket` uses for the opt-in
+    escalation path).
 
     `ChatSession 1 -> 0..1 SupportTicket` (Task 4's UNIQUE constraint on
     `SupportTicket.chat_session_id`) means at most one ticket can ever exist
@@ -770,8 +773,9 @@ def _get_or_create_feedback_escalation_ticket(
     `chat_session.chat_session_id` FIRST -- rather than calling
     `create_support_ticket` and catching the `IntegrityError` it would raise
     on a duplicate insert -- so pressing thumbs-down twice (or thumbs-down
-    on a session Task 14 already auto-escalated for low confidence) reuses
-    the existing ticket instead of erroring.
+    on a session the customer already escalated via
+    `POST /chat/messages/{id}/escalate`) reuses the existing ticket instead
+    of erroring.
     """
     existing = (
         db.query(SupportTicket)
@@ -849,6 +853,131 @@ def submit_message_feedback(
         escalated=support_ticket_id is not None,
         support_ticket_id=support_ticket_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# `POST /chat/messages/{id}/escalate` -- the customer's explicit "Yes" to the
+# escalation offer a low-confidence answer carries
+# (`ChatResponse.escalation_offered`). See
+# docs/superpowers/specs/2026-09-30-demo-routes-and-escalation-design.md.
+#
+# Ownership is `submit_message_feedback`'s exactly: 404 for a missing
+# message, the SAME 404 when a customer-role caller doesn't own the
+# resolved session, 400 for a non-assistant message, support_agent
+# unrestricted.
+#
+# Two failure domains by design: the ticket + in-app notification are
+# committed FIRST, and only then is the external email attempted, inside
+# its own try/except. A down or unconfigured SMTP server degrades to
+# "ticket created, email not sent" (`email_sent=false`) -- never to a
+# rolled-back ticket or a 5xx.
+# ---------------------------------------------------------------------------
+
+
+class ChatMessageEscalateResponse(BaseModel):
+    """`POST /chat/messages/{id}/escalate` response body.
+
+    `support_ticket_id` always identifies a committed ticket (new, or this
+    session's existing one). `email_sent` is False when the notification
+    email could not be sent -- the ticket exists either way.
+    """
+
+    support_ticket_id: int
+    email_sent: bool
+
+
+def _preceding_user_question(db: Session, message: ChatMessage) -> str:
+    """The customer's question this assistant `message` answered: the
+    `role=user` message immediately before it in the same session. `""` if
+    there is none (never expected for a message written by `POST /chat`,
+    which always persists the user/assistant pair together)."""
+    question = (
+        db.query(ChatMessage)
+        .filter(
+            ChatMessage.chat_session_id == message.chat_session_id,
+            ChatMessage.role == ChatMessageRole.USER,
+            ChatMessage.chat_message_id < message.chat_message_id,
+        )
+        .order_by(ChatMessage.chat_message_id.desc())
+        .first()
+    )
+    return question.content if question is not None else ""
+
+
+def _escalation_ticket_description(question: str, answer: str) -> str:
+    return (
+        f"Customer question: {question or '(no preceding question found)'}\n\n"
+        f"Assistant answer: {answer}"
+    )
+
+
+@router.post(
+    "/chat/messages/{chat_message_id}/escalate", response_model=ChatMessageEscalateResponse
+)
+def escalate_message(
+    chat_message_id: int,
+    db: Session = Depends(get_db),
+    current_user: CurrentUser = Depends(_allowed_roles),
+) -> ChatMessageEscalateResponse:
+    message = db.get(ChatMessage, chat_message_id)
+    if message is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Chat message not found")
+
+    chat_session = db.get(ChatSession, message.chat_session_id)
+    if chat_session is None or (
+        current_user.role == "customer" and chat_session.customer_id != current_user.user_id
+    ):
+        # Identical 404 for "no such message" and "exists but isn't yours" --
+        # same cross-tenant posture as `submit_message_feedback` above.
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Chat message not found")
+
+    if message.role != ChatMessageRole.ASSISTANT:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Only an assistant message can be escalated",
+        )
+
+    question = _preceding_user_question(db, message)
+    answer = message.content
+
+    # Idempotent: a double-click, a second "Yes" in the same session, or a
+    # session that already has a thumbs-down ticket all reuse the one
+    # existing ticket (select-first + IntegrityError SAVEPOINT fallback).
+    ticket = get_or_create_escalation_ticket(
+        db, chat_session, description=_escalation_ticket_description(question, answer)
+    )
+    customer = db.get(Customer, chat_session.customer_id)
+
+    # Captured BEFORE the commit below: committing expires every loaded
+    # object, and nothing after the commit may touch the database -- the
+    # email is a separate failure domain from the ticket.
+    support_ticket_id = ticket.support_ticket_id
+    customer_name = customer.full_name
+    customer_email = customer.email
+
+    # Failure domain 1: the ticket + in-app notification become durable here.
+    db.commit()
+
+    # Failure domain 2: best-effort external email. Deliberately broad --
+    # the ticket is already committed, so NO failure in here (SMTP down,
+    # misconfigured, or anything unforeseen) may turn into a 5xx or make
+    # the customer think escalation failed when it didn't.
+    email_sent = False
+    try:
+        send_escalation_email(
+            customer_name=customer_name,
+            customer_email=customer_email,
+            question=question,
+            answer=answer,
+            support_ticket_id=support_ticket_id,
+        )
+        email_sent = True
+    except Exception as exc:  # noqa: BLE001 -- see comment above
+        logger.warning(
+            "Escalation email for support ticket #%s was not sent: %s", support_ticket_id, exc
+        )
+
+    return ChatMessageEscalateResponse(support_ticket_id=support_ticket_id, email_sent=email_sent)
 
 
 class CesSurveyRequest(BaseModel):
