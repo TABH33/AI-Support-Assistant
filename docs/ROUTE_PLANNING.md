@@ -366,15 +366,19 @@ frontend page's "Mark complete" button.
 
 `app/api/chat.py`'s `_detect_todays_routes_intent` recognizes questions
 about routes **already** planned, rather than a request to plan a new one
-— e.g. "what routes were used today", "active routes", "route risks
-today". It requires both a route word (`route`/`routes`) **and** a
-temporal/status word (`today`/`active`) to fire. Bare `risk`/`risks` were
-deliberately dropped from the signal words (final review): this app has
-real domain vocabulary built on "risk" — `DrivingEventType.
-ROUTE_DEVIATION`, the seeded "Route deviation alerts explained" KB
-article — so an ordinary question like "are route deviations a risk to my
-fleet?" used to collide with this intent (it contains "route" + "risk")
-and get hijacked away from RAG. It's only checked when the route-plan
+— e.g. "what routes were used today", "active routes", "are there any
+problems with my route?", "give me a route overview". It requires both a
+route word (`route`/`routes`) **and** a signal word (`today`, `active`,
+`problem`/`problems`, `issue`/`issues`, `overview`). Bare `risk`/`risks`
+were deliberately dropped from the signal words (final review): this app
+has real domain vocabulary built on "risk" — `DrivingEventType.
+ROUTE_DEVIATION`, the seeded "Route deviation alerts explained" KB article
+— so an ordinary question like "are route deviations a risk to my fleet?"
+used to collide with this intent and get hijacked away from RAG. Adding
+"problem"/"issue" reopened the same collision ("are route deviations an
+issue for my fleet?"), so any query mentioning `deviation` is excluded
+from this intent outright. All of these are pinned by regression tests in
+`backend/tests/test_chat_api.py`. It's only checked when the route-plan
 intent (above) didn't match first.
 
 When it fires, `app/ai/route_planning.py`'s `summarize_todays_routes()`
@@ -405,12 +409,23 @@ against elsewhere.
 If no routes were planned that day, the answer is the fixed string `"No
 routes have been planned today."`. Otherwise it opens with a count (`"N
 route(s) planned today (X active, Y completed)."`) followed by one line per
-route naming origin/destination and status, and either "route data was
-unavailable when planned" or a warning count (with a high-severity
-call-out when any warning is `severity="high"`).
+route naming origin/destination, status, and **who was driving** — e.g.
+`- Sydney CBD -> Parramatta (active, driver: Alice Driver): 2 warning(s),
+1 high-severity` — and either "route data was unavailable when planned" or
+a warning count (with a high-severity call-out when any warning is
+`severity="high"`). Unassigned routes read `driver: Unassigned`. Driver
+names come from one batched `Driver` query per answer, only for driver ids
+on the already-scoped rows (`route_plan_driver_label` in
+`app/ai/route_planning.py`, shared with the reports' route-risk section,
+which names drivers the same way using the driver map it already loads).
+
+To give this answer something to show in a demo, run the synthetic
+demo-route seed script — see
+[DEPLOYMENT.md](DEPLOYMENT.md#demo-route-data-optional-manual).
 
 Like the route-plan intent, this bypasses RAG/escalation entirely, always
-returns `confidence: 1.0, escalated: false`, and writes the same
+returns `confidence: 1.0, escalated: false, escalation_offered: false`,
+and writes the same
 `route_plan_generated` audit action as a route-plan turn. `ChatResponse.route_plan`
 stays `null` on this turn — there's no single route to render inline,
 unlike a successful route-plan turn.
@@ -591,7 +606,11 @@ required. Backend tests: `test_geo.py`, `test_openrouteservice.py`,
 (deterministic live-position maths against a fixed `now`),
 `test_route_plan_api.py` (including `driver_id` validation),
 `test_route_plans_live_api.py` (live scoping, filtering and computed
-fields), `test_chat_api.py` (intent routing). Frontend:
+fields), `test_summarize_todays_routes.py` (driver names and the one
+batched driver query), `test_seed_demo_routes.py` (every seeded demo row
+round-trips through the real model and `WarningOut`), `test_chat_api.py`
+(intent routing, including the widened "today's routes" words and their
+false-positive guards). Frontend:
 `RouteMap.test.tsx` and `LiveTrackingMap.test.tsx` (both mock
 `react-leaflet` entirely — jsdom can't render real Leaflet DOM),
 `LiveTracking.test.tsx` (mocked polling fetch), `ChatWidget.test.tsx`

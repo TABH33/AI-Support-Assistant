@@ -112,6 +112,41 @@ score confidence far lower than the content should support, because
 `pgvector`'s similarity search against a `NULL` embedding column returns
 rows in effectively arbitrary order.
 
+### Demo route data (optional, manual)
+
+```bash
+docker compose exec backend python -m app.seed.seed_demo_routes
+```
+
+Adds one batch of **synthetic** `RoutePlan` rows dated *today* (Sydney
+time), so "are there any problems with my route?", "give me a route
+overview", the daily reports, the Routes page and the Live Tracking map all
+have something to show. This is demo scaffolding, **not** incident
+detection — the warnings are drawn at random from a fixed pool of
+realistic-sounding weather/risk-zone entries (see the module docstring in
+`backend/app/seed/seed_demo_routes.py`).
+
+- Run it **after** `python -m app.seed.seed`: it needs existing customers,
+  drivers, and at least one `SupportAgent` (the simulated dispatcher —
+  `created_by_role="support_agent"`). With no support agent it prints
+  `Demo route seeding aborted: ...` and exits `1`.
+- By default it seeds the first 3 customers by id. Add
+  `--customer-id N` (repeatable) to always include the customer you're
+  demoing as, `--customers N` to change the default count, and `--seed N`
+  for a reproducible batch.
+- Each customer gets 3–5 routes between fixed Sydney place pairs (e.g.
+  Sydney CBD → Parramatta, Bondi Beach → Sydney Airport), at least one
+  `active` and one `completed`, a random driver from that customer's own
+  fleet (a minority left "Unassigned"), and 0–3 warnings each.
+- A customer with no drivers is skipped and listed under
+  `Skipped customers:` in the printed summary — not fatal.
+- No network access and no `ORS_API_KEY` needed: geometry is a straight
+  2-point line between the place pair, and distance/duration are fixed per
+  pair.
+- Re-running adds **another** batch; it never errors on existing rows.
+  Seeded rows stop counting as "today" at Sydney midnight like any other
+  route plan, so re-run it on each demo day.
+
 ## Route-planning feature setup
 
 The [route-planning + warnings feature](ROUTE_PLANNING.md) needs one extra
@@ -151,6 +186,45 @@ print('warnings:', len(result.warnings))
 `unavailable: True` here almost always means `ORS_API_KEY` isn't reaching
 the container — check the compose env block above before assuming ORS
 itself is down.
+
+## Escalation email setup
+
+When the AI can't confidently answer, the chat widget asks the customer
+"Would you like to escalate this to a human?". On **Yes**,
+`POST /chat/messages/{id}/escalate` always creates a support ticket, then
+sends one email to `ESCALATION_EMAIL_TO` (`backend/app/integrations/email.py`,
+stdlib `smtplib` — no extra dependency). Email is optional: with
+`SMTP_HOST` blank the ticket is still created and the widget shows
+"(email notification could not be sent)".
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SMTP_HOST` | *(blank)* | SMTP server. Blank = email disabled |
+| `SMTP_PORT` | `587` | Submission port |
+| `SMTP_USERNAME` | *(blank)* | Login user; blank skips `login()` (e.g. an open local relay) |
+| `SMTP_PASSWORD` | *(blank)* | Login password — `.env` only, never logged |
+| `SMTP_FROM_ADDRESS` | *(blank)* | `From:` address; falls back to `SMTP_USERNAME` |
+| `SMTP_USE_TLS` | `true` | STARTTLS after connecting. Only set `false` for a local test relay |
+| `ESCALATION_EMAIL_TO` | `CIHE241731@student.edu.cihe.au` | The one inbox every escalation goes to |
+
+Like `ORS_API_KEY`, every one of these must also be listed in
+`docker-compose.yml`'s `backend.environment` block (it already is) — a
+variable set only in `.env` never reaches the container.
+
+To verify delivery end-to-end with your real SMTP settings:
+
+```bash
+docker compose exec backend python3 -c "
+from app.integrations.email import send_escalation_email
+send_escalation_email(customer_name='Test Customer', customer_email='test@example.test', question='Test question', answer='Test answer', support_ticket_id=0)
+print('sent')
+"
+```
+
+A failure raises `EmailNotConfiguredError` (something blank) or
+`EmailDeliveryError` (with the SMTP server's own error message — e.g. an
+authentication rejection). The API never retries a failed email; the
+ticket in `GET /tickets` is the durable record.
 
 ## Known pitfalls (found deploying this exact repo)
 

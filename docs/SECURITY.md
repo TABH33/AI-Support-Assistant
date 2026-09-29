@@ -151,6 +151,15 @@ the caller. Any new code that writes an unscoped/fleet-wide read into a
 row owned by one specific customer must scope that write to the owning
 customer instead, never leave it fleet-wide.
 
+**Driver names follow the same rule.** The "today's routes" answer now
+names who was driving each route. Those names are looked up only from the
+driver ids on the already session-scoped route rows (one batched query in
+`summarize_todays_routes`), so they can never name another customer's
+driver — and there is still deliberately no fleet-wide variant of this
+chat answer. A support agent who wants "who was driving" across every
+customer uses `GET /route-plans/live` (which returns `driver_name` straight
+to the caller and never writes it into a tenant-owned row).
+
 ## At-rest PII encryption
 
 `Customer.full_name`, `Customer.email`, and `Customer.phone_number` are
@@ -184,13 +193,46 @@ undecryptable** — back it up like any other production secret.
 `Driver.email`/`Driver.phone_number` and `SupportAgent.email` are **not**
 encrypted — only `Customer`'s PII columns are in scope for this control.
 
+## Opt-in escalation email
+
+Escalation to a human is **opt-in**: a low-confidence answer only
+*offers* it, and nothing is created or sent until the customer says yes
+(`POST /chat/messages/{chat_message_id}/escalate`). That endpoint's
+ownership check is identical to the thumbs-down feedback endpoint's (`404`
+for another customer's message, indistinguishable from a missing one), so
+it grants no capability thumbs-down didn't already have.
+
+What leaves the system on a "Yes": one plaintext email to the single
+operator-configured `ESCALATION_EMAIL_TO` address, containing the
+customer's full name and email (both **encrypted at rest** in the database
+— see above — but necessarily decrypted to put in the email), their
+question, the fallback answer, and the ticket id. Everything in it comes
+from that customer's own chat session. The destination is one operator
+setting, never customer-supplied.
+
+- Transport: STARTTLS when `SMTP_USE_TLS=true` (the default). Setting it
+  `false` sends in cleartext — only for a local test relay.
+- `SMTP_PASSWORD` comes from `.env` only, is handed straight to
+  `smtplib.login()`, and is never logged or included in an exception
+  message (`backend/tests/test_email.py` pins this).
+- Ticket creation and email sending are separate failure domains: the
+  ticket is committed first, and an email failure only yields
+  `email_sent: false` — it can't roll back or hide the ticket.
+- Not rate-limited (POC scope): an authenticated customer can trigger one
+  email per "Yes" on their own messages. The widget disables "Yes" while a
+  request is in flight.
+
 ## Audit logging
 
 Every AI-generated recommendation shown to a user is recorded in
 `audit_logs` (`app/security/audit.py`):
 
-- `action=chat_answer` — one row per `POST /chat` turn, noting confidence
-  and whether it was escalated.
+- `action=chat_answer` — one row per `POST /chat` turn, noting confidence,
+  `escalated` (always `False` on this path since escalation became opt-in)
+  and `escalation_offered` (whether the customer was offered a human
+  hand-off). The customer's later "Yes"
+  (`POST /chat/messages/{id}/escalate`) is recorded by the `SupportTicket`
+  it creates, not by a separate audit row.
 - `action=report_generated` — one row per generated report (chat-routed or
   via the direct `/reports/*` endpoints), noting the report type.
 - `action=route_plan_generated` — one row per route-plan request (chat-routed

@@ -24,7 +24,7 @@ flowchart LR
     LLM --> CONF["_compute_confidence()"]
     CONF --> ESC{"confidence >= 0.6?"}
     ESC -- yes --> A2["answer shown as-is"]
-    ESC -- no --> FB["FALLBACK_TEXT +\nauto-created SupportTicket"]
+    ESC -- no --> FB["FALLBACK_TEXT +\nescalation_offered=true\n(no ticket until the customer says yes)"]
 ```
 
 ## Step 0: route-plan intent routing (bypasses RAG entirely, checked first)
@@ -132,35 +132,48 @@ not a calibrated model probability. `_compute_confidence` in
    model reporting "I can't answer this" is the strongest available signal,
    even if retrieval technically found *something*.
 
-## Step 5: escalation gate (`app/ai/escalation.py`)
+## Step 5: escalation offer (`app/ai/escalation.py`)
 
-`handle_answer` compares `confidence` against
+`handle_answer(chat_answer)` compares `confidence` against
 `ESCALATION_CONFIDENCE_THRESHOLD` (env-configurable, default **0.6**):
 
 - **At or above threshold**: the LLM's answer is returned to the customer
-  unchanged. No ticket, no notification.
+  unchanged, `escalation_offered: false`.
 - **Below threshold**: the customer-facing text is replaced with the exact
-  `FALLBACK_TEXT`, and a `SupportTicket` + `Notification` are created so a
-  human agent can pick it up. Escalation is **idempotent per session** — if
-  the same `ChatSession` produces a second low-confidence answer, the
-  existing ticket is reused (a `SELECT`-first check, with an
-  `IntegrityError`-safe retry under a SAVEPOINT for the concurrent-request
-  case) rather than raising a DB constraint violation on the second insert.
+  `FALLBACK_TEXT`, and the response carries `escalation_offered: true`.
+  **Nothing else happens** — `handle_answer` no longer takes a database
+  session at all, so it cannot create a ticket. The chat widget asks
+  "Would you like to escalate this to a human?"; **No** is purely local,
+  **Yes** calls `POST /chat/messages/{id}/escalate`.
 
-Separately, a customer can also manually escalate any *specific* answer by
-giving it a thumbs-down (`PATCH /chat/messages/{id}/feedback`), which
-creates a ticket through the same idempotent pattern — see
+That endpoint creates the `SupportTicket` + in-app `Notification` through
+`get_or_create_escalation_ticket` — idempotent per session (a
+`SELECT`-first check, with an `IntegrityError`-safe retry under a
+SAVEPOINT for the concurrent-request case), so a double-click can never
+create two tickets — commits, and only **then** best-effort emails the
+support inbox (see [DEPLOYMENT.md](DEPLOYMENT.md#escalation-email-setup)).
+An email failure returns `email_sent: false`; the ticket stays.
+
+`escalated` on `POST /chat`'s response is therefore always `false` now; it
+still means "a ticket exists for this exchange" on the escalate and
+feedback endpoints' responses.
+
+Separately, a customer can also escalate any *specific* answer by giving
+it a thumbs-down (`PATCH /chat/messages/{id}/feedback`), which creates or
+reuses the same one-per-session ticket — see
 [API_REFERENCE.md](API_REFERENCE.md).
 
 ## Atomicity
 
 Everything in one `POST /chat` call — session creation/lookup, the two
-`ChatMessage` rows (user + assistant), any escalation `SupportTicket`/
-`Notification`, and the `AuditLog` row — is staged with `db.flush()` and
-committed **exactly once**, at the very end of the request. This closes a
-real bug where each piece used to commit separately: a failure between (say)
-the ticket commit and the message commit could strand a `SupportTicket`
-pointing at a session with zero messages for a support agent to act on.
+`ChatMessage` rows (user + assistant), and the `AuditLog` row — is staged
+with `db.flush()` and committed **exactly once**, at the very end of the
+request. This closed a real bug from when each piece (including the
+then-automatic escalation ticket) committed separately: a failure between
+two commits could strand a `SupportTicket` pointing at a session with zero
+messages. Escalation tickets are now created only by
+`POST /chat/messages/{id}/escalate`, which likewise commits its ticket and
+notification together, once, before attempting the email.
 
 ## Known scope limits
 

@@ -138,8 +138,11 @@ model for) and remains a planned next step, not a shipped feature.
    confidence score for the answer.
 6. `ai/escalation.py` checks that confidence against
    `ESCALATION_CONFIDENCE_THRESHOLD` (default `0.6`). Below it, the answer
-   is replaced with a fixed fallback string and a `SupportTicket` is
-   auto-created; at or above it, the LLM's answer is returned as-is.
+   is replaced with a fixed fallback string and the response carries
+   `escalation_offered: true` — the widget then asks the customer whether
+   to escalate, and only a "Yes" (`POST /chat/messages/{id}/escalate`)
+   creates a `SupportTicket` and emails the support inbox. At or above the
+   threshold, the LLM's answer is returned as-is.
 7. The exchange (question + answer + confidence + escalation outcome) is
    persisted as `ChatMessage` rows and recorded in `audit_logs` — all in a
    single commit per request (see [RAG_PIPELINE.md](RAG_PIPELINE.md) and

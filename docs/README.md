@@ -34,8 +34,10 @@ based on the three source reports in the repo root:
   embeddings.
 - **Core feature**: a RAG (Retrieval-Augmented Generation) chat assistant
   that answers customer questions from a knowledge base plus live telematics
-  data, escalating to a human support ticket whenever it isn't confident in
-  its own answer.
+  data. Whenever it isn't confident in its own answer it shows a fixed
+  fallback message and *offers* to escalate to a human — a support ticket
+  (plus an email to the support inbox, if SMTP is configured) is created
+  only if the customer says yes.
 
 If you only read one other document, read [ARCHITECTURE.md](ARCHITECTURE.md)
 first — everything else assumes it.

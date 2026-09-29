@@ -110,23 +110,39 @@ happens inside.
 ```json
 {
   "session_id": 1, "message_id": 42, "answer": "...",
-  "confidence": 0.82, "escalated": false,
+  "confidence": 0.82, "escalated": false, "escalation_offered": false,
   "route_plan": null
 }
 ```
 
-Before the RAG pipeline runs, the query is checked for two other intents,
+- `escalation_offered` — `true` only on a low-confidence RAG answer:
+  `answer` is then the fixed fallback text, and the client should ask
+  "Would you like to escalate this to a human?". **Nothing has been
+  escalated yet** — the customer's "Yes" is
+  `POST /chat/messages/{chat_message_id}/escalate` (below).
+- `escalated` — "a ticket now exists for this exchange". Always `false` on
+  `POST /chat` since escalation became opt-in; the escalate and feedback
+  endpoints report their own outcome.
+
+Before the RAG pipeline runs, the query is checked for three other intents,
 in order:
 
 1. **Route planning** — "plan a trip from Sydney CBD to Parramatta" routes
    to the [route-planning feature](ROUTE_PLANNING.md) instead of RAG,
-   returning `confidence: 1.0, escalated: false` and a populated
-   `route_plan` field (same shape as [`POST /route-plan`](#post-route-plan)'s
-   response) on success — `null` on every other kind of turn.
-2. **Reports** (see [RAG_PIPELINE.md](RAG_PIPELINE.md)) — phrases like
+   returning a populated `route_plan` field (same shape as
+   [`POST /route-plan`](#post-route-plan)'s response) on success — `null`
+   on every other kind of turn.
+2. **Today's routes** — a route word (`route`/`routes`) plus one of
+   `today`, `active`, `problem(s)`, `issue(s)`, `overview` (and no
+   mention of `deviation`) returns a deterministic summary of the chat
+   session's own customer's routes planned today, naming each route's
+   driver. See [ROUTE_PLANNING.md](ROUTE_PLANNING.md).
+3. **Reports** (see [RAG_PIPELINE.md](RAG_PIPELINE.md)) — phrases like
    "daily report" or "start of day" route straight to the report
-   generators instead, also returning `confidence: 1.0, escalated: false`
-   unconditionally.
+   generators.
+
+All three return `confidence: 1.0, escalated: false,
+escalation_offered: false` unconditionally.
 
 ### `GET /tickets`
 
@@ -152,13 +168,42 @@ Thumbs up/down on an assistant `ChatMessage`.
 ```
 
 - `feedback: false` (thumbs-down) creates a `SupportTicket` — idempotently:
-  pressing thumbs-down twice, or thumbs-down on a session already
-  auto-escalated for low confidence, reuses the existing ticket rather than
-  erroring (`ChatSession 1 → 0..1 SupportTicket` is a DB unique constraint).
+  pressing thumbs-down twice, or thumbs-down on a session the customer
+  already escalated via `POST /chat/messages/{chat_message_id}/escalate`,
+  reuses the existing ticket rather than erroring (`ChatSession 1 → 0..1
+  SupportTicket` is a DB unique constraint).
 - `feedback: true` (thumbs-up) never escalates; `escalated` is always
   `false` and `support_ticket_id` always `null`.
 - 400 if the target message's `role` isn't `assistant` — there's no
   feedback concept on a user's own message.
+
+### `POST /chat/messages/{chat_message_id}/escalate`
+
+The customer's explicit **Yes** to an escalation offer
+(`ChatResponse.escalation_offered: true`). No request body.
+
+**Response** (`ChatMessageEscalateResponse`) `200`
+```json
+{ "support_ticket_id": 7, "email_sent": true }
+```
+
+- Ownership is exactly `PATCH .../feedback`'s: `404` if the message
+  doesn't exist **or** (for a `customer` caller) belongs to another
+  customer's session — deliberately indistinguishable — and `400` if it
+  isn't a `role=assistant` message. `support_agent` is unrestricted.
+- Creates the session's `SupportTicket` plus an `in_app` `Notification`
+  and **commits them first**. Idempotent: a double-click, a second "Yes" in
+  the same session, or a session that already has a thumbs-down ticket
+  reuses the existing ticket (and sends no second notification).
+- **Then** best-effort sends one email to the operator-configured
+  `ESCALATION_EMAIL_TO` with the customer's name, their question (the user
+  message immediately before this answer), the answer text, and the
+  ticket id — see [DEPLOYMENT.md](DEPLOYMENT.md#escalation-email-setup).
+  An email is attempted on every successful call, including a reused
+  ticket.
+- `email_sent: false` means the ticket exists but the email wasn't
+  delivered (SMTP not configured, or the SMTP server failed). A failed
+  email is never a `5xx` and never rolls the ticket back.
 
 ### `POST /chat/sessions/{chat_session_id}/survey`
 
