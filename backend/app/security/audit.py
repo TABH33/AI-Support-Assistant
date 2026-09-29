@@ -13,7 +13,9 @@ AI-generated recommendation shown to a user --
 
   * `ACTION_CHAT_ANSWER` -- Task 15's `POST /chat`, logged once per turn
     after `handle_answer` resolves the final customer-facing text. Notes
-    the answer's confidence score and whether it was escalated.
+    the answer's confidence score, `escalated` (always False on this path
+    since escalation became opt-in), and `escalation_offered` (whether the
+    customer was offered a human hand-off).
   * `ACTION_REPORT_GENERATED` -- Task 16's `POST /reports/start-of-day` and
     `POST /reports/end-of-day`, logged once per generated report. Notes
     which report type was generated.

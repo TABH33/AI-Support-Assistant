@@ -58,6 +58,7 @@ from app.models import (
     Customer,
     Device,
     Driver,
+    Notification,
     RoutePlan,
     SupportTicket,
     Trip,
@@ -678,11 +679,19 @@ def test_customer_cannot_reuse_another_customers_session(client, db_session, fle
 # ---------------------------------------------------------------------------
 
 
-def test_escalation_path_returns_escalated_true_and_fallback_text(client, db_session, fleet_a):
-    # No trip/driver/vehicle context resolved and no KB articles seeded, so
-    # `_compute_confidence` pins confidence to the 0.1 floor -- below
-    # `settings.escalation_confidence_threshold` (0.6 default) -- regardless
-    # of what the (mocked) LLM says.
+def test_low_confidence_answer_offers_escalation_without_creating_a_ticket(
+    client, db_session, fleet_a
+):
+    """Opt-in escalation (docs/superpowers/specs/2026-09-30-demo-routes-and-
+    escalation-design.md): a low-confidence answer still shows the exact
+    FALLBACK_TEXT, but no longer creates a SupportTicket/Notification on its
+    own -- it only sets `escalation_offered`, and the customer decides via
+    POST /chat/messages/{id}/escalate.
+
+    No trip/driver/vehicle context resolved and no KB articles seeded, so
+    `_compute_confidence` pins confidence to the 0.1 floor -- below
+    `settings.escalation_confidence_threshold` (0.6 default) -- regardless
+    of what the (mocked) LLM says."""
     assert 0.1 < settings.escalation_confidence_threshold
 
     with patch(
@@ -700,18 +709,14 @@ def test_escalation_path_returns_escalated_true_and_fallback_text(client, db_ses
 
     assert response.status_code == 200
     body = response.json()
-    assert body["escalated"] is True
+    assert body["escalation_offered"] is True
+    assert body["escalated"] is False
     assert body["answer"] == FALLBACK_TEXT
     assert body["confidence"] <= 0.1
 
     db_session.expire_all()
-    tickets = (
-        db_session.query(SupportTicket)
-        .filter_by(chat_session_id=body["session_id"])
-        .all()
-    )
-    assert len(tickets) == 1
-    assert tickets[0].customer_id == fleet_a["customer"].customer_id
+    assert db_session.query(SupportTicket).count() == 0
+    assert db_session.query(Notification).count() == 0
 
     # The persisted assistant message is the fallback text, not the raw LLM guess.
     messages = (
@@ -722,15 +727,12 @@ def test_escalation_path_returns_escalated_true_and_fallback_text(client, db_ses
     assert messages[0].content == FALLBACK_TEXT
 
 
-def test_two_consecutive_low_confidence_turns_reuse_the_same_ticket(client, db_session, fleet_a):
-    """Final-review Fix 2 regression test: before the fix, a second
-    low-confidence answer in the SAME session hit Task 8's DB-level
-    ChatSession 1 -> 0..1 SupportTicket UNIQUE constraint and raised an
-    unhandled `IntegrityError` all the way up to an unhandled 500 (Task 14's
-    `handle_answer` called `create_support_ticket` unconditionally, with no
-    select-first check). The second turn must instead return a normal 200
-    response and reuse the SAME `support_ticket_id` as the first, with
-    exactly one `SupportTicket` row in the DB afterward."""
+def test_two_consecutive_low_confidence_turns_each_offer_escalation_and_create_no_ticket(
+    client, db_session, fleet_a
+):
+    """Before opt-in, a second low-confidence turn in the same session had
+    to reuse the first turn's auto-created ticket (final-review Fix 2). Now
+    neither turn creates one: each simply offers escalation again."""
     with patch(
         "app.ai.chat_service.chat_completion",
         return_value="I think it might possibly be a battery issue?",
@@ -745,7 +747,7 @@ def test_two_consecutive_low_confidence_turns_reuse_the_same_ticket(client, db_s
         )
     assert first_response.status_code == 200
     first_body = first_response.json()
-    assert first_body["escalated"] is True
+    assert first_body["escalation_offered"] is True
     session_id = first_body["session_id"]
 
     with patch(
@@ -763,15 +765,12 @@ def test_two_consecutive_low_confidence_turns_reuse_the_same_ticket(client, db_s
 
     assert second_response.status_code == 200
     second_body = second_response.json()
-    assert second_body["escalated"] is True
+    assert second_body["escalation_offered"] is True
+    assert second_body["escalated"] is False
     assert second_body["answer"] == FALLBACK_TEXT
 
     db_session.expire_all()
-    tickets = (
-        db_session.query(SupportTicket).filter_by(chat_session_id=session_id).all()
-    )
-    assert len(tickets) == 1
-    assert tickets[0].support_ticket_id is not None
+    assert db_session.query(SupportTicket).filter_by(chat_session_id=session_id).count() == 0
 
 
 def test_failure_after_ticket_and_notification_leaves_no_stranded_rows(client, db_session, fleet_a):
@@ -862,7 +861,8 @@ def test_customer_supplied_cross_tenant_trip_and_driver_ids_do_not_leak(
     # Confidence reflects "nothing was found" -- the strongest available
     # signal that no cross-tenant data was silently included.
     assert body["confidence"] <= 0.1
-    assert body["escalated"] is True
+    assert body["escalation_offered"] is True
+    assert body["escalated"] is False
 
     # And, for good measure: the ChatSession created belongs to customer A,
     # not customer B -- retrieval was scoped to the caller's own customer_id.
@@ -1286,3 +1286,40 @@ def test_route_plan_intent_still_wins_over_a_widened_signal_word(client, fleet_a
     assert response.status_code == 200
     assert response.json()["answer"] == "Which starting point should I plan this route from?"
     mock_summary.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# demo-routes-and-escalation: escalation is only ever OFFERED on a
+# low-confidence RAG turn -- never on a confident answer or on any of the
+# always-delivered non-RAG intents.
+# ---------------------------------------------------------------------------
+
+
+def test_confident_and_non_rag_turns_never_offer_escalation(client, db_session, fleet_a):
+    _seed_article(db_session)
+    with patch("app.ai.chat_service.chat_completion", return_value="Your trip covered 42.5 km."):
+        confident = client.post(
+            "/chat",
+            json={
+                "query": "how far was my trip?",
+                "trip_id": fleet_a["trip"].trip_id,
+                "device_id": fleet_a["device"].device_id,
+            },
+            headers=fleet_a["headers"],
+        )
+    with patch("app.api.chat.generate_end_of_day_report", return_value="report text"):
+        report = client.post(
+            "/chat",
+            json={"query": "give me the daily report", "device_id": fleet_a["device"].device_id},
+            headers=fleet_a["headers"],
+        )
+    todays_routes = client.post(
+        "/chat",
+        json={"query": "what routes were used today?", "device_id": fleet_a["device"].device_id},
+        headers=fleet_a["headers"],
+    )
+
+    for response in (confident, report, todays_routes):
+        assert response.status_code == 200
+        assert response.json()["escalation_offered"] is False
+        assert response.json()["escalated"] is False

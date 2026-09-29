@@ -1,34 +1,27 @@
-"""Escalation & ticketing logic (Task 14): `handle_answer`.
+"""Escalation logic (Task 14, reworked for opt-in escalation): `handle_answer`
+and `get_or_create_escalation_ticket`.
 
-Bridges Task 13's LLM chat service (`ChatAnswer`) and Task 8's chat
-repository (`create_support_ticket`, `create_notification`): decides
-whether a given `ChatAnswer` is confident enough to show to the customer
-as-is, or whether it must instead be escalated to a human support agent.
+Opt-in, not automatic (docs/superpowers/specs/2026-09-30-demo-routes-and-escalation-design.md).
+This module used to create a `SupportTicket` + `Notification` silently
+whenever an answer's confidence fell below the threshold. It no longer does.
+There are now two separate steps with two separate callers:
 
-Escalation rule (per the task brief): when `chat_answer.confidence` is
-strictly below `settings.escalation_confidence_threshold`, the raw LLM
-answer is considered unreliable enough that it must not be shown to the
-customer. In that case this module:
+  1. `handle_answer` -- called by `POST /chat` for every RAG turn -- only
+     DECIDES. Below `settings.escalation_confidence_threshold` it swaps the
+     raw LLM text for Task 13's exact `FALLBACK_TEXT` (the ASS2 compliance
+     requirement: an unreliable answer is never shown to the customer; see
+     `chat_service.py`'s module docstring) and sets
+     `escalation_offered=True`, so the chat widget can ask "Would you like
+     to escalate this to a human?". It touches no database row at all --
+     which is why it no longer takes a `Session`.
+  2. `get_or_create_escalation_ticket` -- called only by
+     `POST /chat/messages/{id}/escalate`, i.e. only after the customer
+     explicitly said yes -- creates the ticket + in-app notification,
+     idempotently.
 
-  1. Creates a `SupportTicket` (Task 8's `create_support_ticket`) linked to
-     the given `chat_session_id`, so a human agent can pick it up.
-  2. Creates a `Notification` (Task 8's `create_notification`) informing the
-     customer their query has been escalated.
-  3. Returns Task 13's exact `FALLBACK_TEXT` constant -- never the raw LLM
-     text -- so the customer-facing message matches ASS2's compliance
-     requirement verbatim (see `chat_service.py`'s module docstring).
-
-At or above the threshold, the `ChatAnswer.text` is returned unchanged and
-no ticket/notification is created.
-
-`customer_id`/`device_id` for `create_support_ticket` are looked up from the
-`ChatSession` row identified by `chat_session_id`, rather than accepted as
-separate parameters -- `handle_answer`'s caller (the chat endpoint handling
-one turn of an existing session) already has `chat_session_id` in hand and
-should not need to separately track/pass the session's `customer_id`/
-`device_id` just to escalate; those fields live on `ChatSession` and Task 8's
-repository has no lookup-by-id helper of its own, so this module reads the
-row directly via `db.get(ChatSession, ...)`.
+`EscalationResult.escalated` keeps its meaning ("a ticket now exists for
+this exchange"). Since `handle_answer` never creates one, it now always
+returns `escalated=False`; nothing implicit ever sets it again.
 """
 
 from __future__ import annotations
@@ -44,11 +37,16 @@ from app.models.chat import ChatSession, SupportTicket
 from app.models.enums import PreferredNotificationMethod
 from app.repositories.chat import create_notification, create_support_ticket
 
-#: Message stored on the `Notification` created when an answer is escalated.
+_ESCALATION_TICKET_SUBJECT = (
+    "Customer asked for a human after the AI assistant could not confidently answer"
+)
+
+#: Message stored on the in-app `Notification` created when a customer
+#: accepts the escalation offer.
 _ESCALATION_NOTIFICATION_MESSAGE = (
-    "Your question has been escalated to a support agent because the AI "
-    "assistant could not confidently answer it. A support ticket has been "
-    "created and an agent will follow up with you."
+    "You asked for your question to be escalated to a support agent after "
+    "the AI assistant could not confidently answer it. A support ticket has "
+    "been created and an agent will follow up with you."
 )
 
 
@@ -57,54 +55,50 @@ class EscalationResult:
     """The result of one `handle_answer` call.
 
     `text` is what should actually be shown to the customer: either the
-    original `ChatAnswer.text` (not escalated) or Task 13's `FALLBACK_TEXT`
-    (escalated). `escalated` records which case applied, and
-    `support_ticket_id` is the id of the newly created `SupportTicket` when
-    escalated, or `None` when not.
+    original `ChatAnswer.text` (confident) or Task 13's `FALLBACK_TEXT`
+    (not confident). `escalation_offered` is True exactly when the fallback
+    was used -- the customer should be asked whether to escalate.
+    `escalated`/`support_ticket_id` describe a ticket that exists for this
+    exchange; `handle_answer` never creates one, so they are always
+    `False`/`None` here (the explicit-confirm endpoint reports its own).
     """
 
     text: str
     escalated: bool
+    escalation_offered: bool
     support_ticket_id: int | None
 
 
-def _get_or_create_escalation_ticket(
+def get_or_create_escalation_ticket(
     db: Session,
     chat_session: ChatSession,
-    chat_answer: ChatAnswer,
     *,
-    notification_type: PreferredNotificationMethod,
+    description: str,
+    notification_type: PreferredNotificationMethod = PreferredNotificationMethod.IN_APP,
 ) -> SupportTicket:
-    """Idempotently escalate a low-confidence answer to a human support
-    ticket, mirroring `app.api.chat._get_or_create_feedback_escalation_ticket`
-    (Task 22)'s exact select-first pattern for the same
-    `ChatSession 1 -> 0..1 SupportTicket` UNIQUE constraint
-    (`SupportTicket.chat_session_id`, Task 4's schema).
+    """Idempotently create (or reuse) this session's escalation ticket,
+    mirroring `app.api.chat._get_or_create_feedback_escalation_ticket`'s
+    select-first pattern for the same `ChatSession 1 -> 0..1 SupportTicket`
+    UNIQUE constraint (`SupportTicket.chat_session_id`, Task 4's schema).
 
-    A session can pick up a second (or third, ...) low-confidence answer in
-    the SAME conversation -- `handle_answer` used to call
-    `create_support_ticket` unconditionally every time, which raised an
-    unhandled `IntegrityError` (-> 500) on the second low-confidence turn.
-    This SELECTs for an existing ticket for `chat_session.chat_session_id`
-    FIRST and reuses it if found (the realistic, sequential case).
+    Called by `POST /chat/messages/{id}/escalate` after the customer says
+    yes. A double-click on "Yes", a later "Yes" on another answer in the
+    same session, or a session that already has a thumbs-down ticket must
+    all reuse the one existing ticket -- so this SELECTs for it FIRST.
 
-    For the theoretical concurrent case -- two simultaneous low-confidence
-    answers for the same session racing each other -- the initial SELECT can
-    still miss a not-yet-committed insert from the other request, so the
-    insert itself is also wrapped in `try/except IntegrityError` with a
-    re-select fallback. Only a genuinely new ticket gets a new
-    `Notification`; a reused ticket does not send a duplicate one.
+    For the theoretical concurrent case -- two simultaneous requests for the
+    same session racing each other -- the initial SELECT can still miss a
+    not-yet-committed insert from the other request, so the insert itself
+    is also wrapped in `try/except IntegrityError` with a re-select
+    fallback. Only a genuinely new ticket gets a new `Notification`; a
+    reused ticket does not send a duplicate one.
 
-    Final-review Fix 6 note: the insert attempt runs inside a `db.begin_nested()`
-    SAVEPOINT, not a plain `try/except`. `handle_answer` is called mid-way
-    through `POST /chat`'s single request-wide transaction (Fix 6: the chat
-    route now flushes-and-commits-once at the very end, not per-repository-
-    call), so a bare `db.rollback()` here on `IntegrityError` would discard
-    the ENTIRE transaction so far -- including the `ChatSession` row this
-    very call is escalating for, if it was just created earlier in the same
-    request -- not just the failed ticket insert. The SAVEPOINT scopes the
-    rollback to only the failed insert, leaving the rest of the request's
-    staged work intact.
+    The insert runs inside a `db.begin_nested()` SAVEPOINT, not a plain
+    `try/except` (final-review Fix 6): the caller owns one request-wide
+    transaction, so a bare `db.rollback()` here would discard everything
+    else that request had staged, not just the failed insert.
+
+    Flushes, never commits -- the caller owns `db.commit()`.
     """
     existing = (
         db.query(SupportTicket)
@@ -121,8 +115,8 @@ def _get_or_create_escalation_ticket(
                 chat_session_id=chat_session.chat_session_id,
                 customer_id=chat_session.customer_id,
                 device_id=chat_session.device_id,
-                subject="AI assistant could not confidently answer a customer question",
-                description=chat_answer.text,
+                subject=_ESCALATION_TICKET_SUBJECT,
+                description=description,
             )
     except IntegrityError:
         existing = (
@@ -147,39 +141,27 @@ def _get_or_create_escalation_ticket(
     return ticket
 
 
-def handle_answer(
-    db: Session,
-    chat_session_id: int,
-    chat_answer: ChatAnswer,
-    *,
-    notification_type: PreferredNotificationMethod = PreferredNotificationMethod.IN_APP,
-) -> EscalationResult:
-    """Decide whether `chat_answer` needs escalation, act on that decision,
-    and return the customer-facing `EscalationResult`.
+def handle_answer(chat_answer: ChatAnswer) -> EscalationResult:
+    """Decide whether `chat_answer` is confident enough to show as-is.
 
-    Below `settings.escalation_confidence_threshold`: looks up the
-    `ChatSession` for `chat_session_id` (raises `ValueError` if it doesn't
-    exist -- mirrors `end_chat_session`'s own not-found handling in Task 8's
-    repository) to get `customer_id`/`device_id`, then reuses (or creates)
-    exactly one `SupportTicket` for this session via
-    `_get_or_create_escalation_ticket`, and returns `FALLBACK_TEXT` with
-    `escalated=True`.
+    At or above `settings.escalation_confidence_threshold`: returns
+    `chat_answer.text` unchanged, `escalation_offered=False`.
 
-    At or above the threshold: returns `chat_answer.text` unchanged, with
-    `escalated=False` and `support_ticket_id=None`. No ticket or
-    notification is created.
+    Below it: returns the exact `FALLBACK_TEXT` constant (never the raw LLM
+    text) with `escalation_offered=True`. No ticket or notification is
+    created -- that only happens if the customer accepts the offer, via
+    `POST /chat/messages/{id}/escalate` -> `get_or_create_escalation_ticket`.
     """
     if chat_answer.confidence >= settings.escalation_confidence_threshold:
-        return EscalationResult(text=chat_answer.text, escalated=False, support_ticket_id=None)
-
-    chat_session = db.get(ChatSession, chat_session_id)
-    if chat_session is None:
-        raise ValueError(f"ChatSession {chat_session_id!r} not found")
-
-    ticket = _get_or_create_escalation_ticket(
-        db, chat_session, chat_answer, notification_type=notification_type
-    )
-
+        return EscalationResult(
+            text=chat_answer.text,
+            escalated=False,
+            escalation_offered=False,
+            support_ticket_id=None,
+        )
     return EscalationResult(
-        text=FALLBACK_TEXT, escalated=True, support_ticket_id=ticket.support_ticket_id
+        text=FALLBACK_TEXT,
+        escalated=False,
+        escalation_offered=True,
+        support_ticket_id=None,
     )

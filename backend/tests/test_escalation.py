@@ -1,34 +1,24 @@
-"""Tests for `app.ai.escalation` (Task 14).
+"""Tests for `app.ai.escalation` (Task 14, reworked for opt-in escalation --
+docs/superpowers/specs/2026-09-30-demo-routes-and-escalation-design.md).
 
-Same in-memory SQLite fixture pattern as `test_chat_repository.py` (Task 8):
-construct via the repository functions, commit, `expire_all()`, then
-re-fetch fresh copies via `session.get()` / real queries to prove the
-escalation flow genuinely round-trips through the DB, not just that the
-in-memory return values look right.
-
-Covers:
-  * High-confidence `ChatAnswer` passes through unchanged, with NO
-    `SupportTicket` created for that session (verified via a real query).
-  * Low-confidence `ChatAnswer` creates EXACTLY ONE `SupportTicket` and ONE
-    `Notification`, and returns the exact `FALLBACK_TEXT` constant
-    (re-fetched from the DB, not just inspected off the return value).
-  * The threshold comparison direction: exactly-at-threshold does NOT
-    escalate ("below threshold" escalates, not "at or below").
-  * Escalating twice for the same session (final-review Fix 2) reuses the
-    SAME `SupportTicket` instead of raising `IntegrityError` -- Task 8's
-    DB-level ChatSession 1 -> 0..1 SupportTicket constraint still applies,
-    but `handle_answer` now selects for an existing ticket first, mirroring
-    `app.api.chat._get_or_create_feedback_escalation_ticket`'s pattern.
-  * The theoretical concurrent race (two simultaneous low-confidence
-    answers for the same session) recovers via a `db.begin_nested()`
-    SAVEPOINT without rolling back unrelated work staged earlier in the
-    same outer transaction -- final-review Fix 6 made `handle_answer` run
-    mid-way through `POST /chat`'s single request-wide transaction, so a
-    bare `db.rollback()` on the race's `IntegrityError` would have been too
-    broad.
+Two halves, matching the module's two functions:
+  * `handle_answer` is now a pure decision: high confidence passes the LLM
+    text through; low confidence swaps in the exact `FALLBACK_TEXT` and sets
+    `escalation_offered=True`. It never creates a ticket -- it no longer
+    even takes a `Session` -- and never sets `escalated=True`.
+  * `get_or_create_escalation_ticket` (called only by the explicit
+    `POST /chat/messages/{id}/escalate` endpoint) is tested against a real
+    in-memory SQLite round-trip, same fixture pattern as
+    `test_chat_repository.py`: exactly one ticket + one in-app notification,
+    reuse instead of `IntegrityError` on a second call, and the
+    SAVEPOINT-scoped recovery for the concurrent race (final-review Fix 6),
+    which must not roll back unrelated work staged earlier in the same
+    outer transaction.
 """
 
 from __future__ import annotations
+
+import inspect
 
 import pytest
 from sqlalchemy import create_engine, event, select
@@ -37,7 +27,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
 from app.ai.chat_service import FALLBACK_TEXT, ChatAnswer
-from app.ai.escalation import EscalationResult, _get_or_create_escalation_ticket, handle_answer
+from app.ai.escalation import EscalationResult, get_or_create_escalation_ticket, handle_answer
 from app.config import settings
 from app.models import Base, ChatSession, Customer, Device, Notification, SupportTicket
 from app.models.enums import DeviceStatus, PreferredNotificationMethod
@@ -106,169 +96,133 @@ def _tickets_for_session(session, chat_session_id: int) -> list[SupportTicket]:
     )
 
 
+def _notifications_for_ticket(session, support_ticket_id: int) -> list[Notification]:
+    return list(
+        session.execute(
+            select(Notification).where(Notification.support_ticket_id == support_ticket_id)
+        )
+        .scalars()
+        .all()
+    )
+
+
 # ---------------------------------------------------------------------------
-# High confidence: pass-through, no ticket
+# handle_answer: a pure offer/no-offer decision
 # ---------------------------------------------------------------------------
 
 
-def test_high_confidence_answer_passes_through_unchanged_with_no_ticket(session):
-    chat_session = _make_chat_session(session, "HC1")
+def test_high_confidence_answer_passes_through_and_offers_nothing():
     answer = ChatAnswer(text="Your device battery is at 80%.", confidence=0.9)
     assert answer.confidence >= settings.escalation_confidence_threshold
 
-    result = handle_answer(session, chat_session.chat_session_id, answer)
+    result = handle_answer(answer)
 
     assert isinstance(result, EscalationResult)
-    assert result.escalated is False
     assert result.text == "Your device battery is at 80%."
+    assert result.escalated is False
+    assert result.escalation_offered is False
     assert result.support_ticket_id is None
 
-    # Verify via a real DB query -- not just the return value -- that no
-    # SupportTicket row exists for this session.
-    session.expire_all()
-    tickets = _tickets_for_session(session, chat_session.chat_session_id)
-    assert tickets == []
 
-
-def test_confidence_exactly_at_threshold_does_not_escalate(session):
-    """'below threshold' escalates; exactly-at-threshold must NOT (direction check)."""
-    chat_session = _make_chat_session(session, "HC2")
+def test_confidence_exactly_at_threshold_does_not_offer_escalation():
+    """'below threshold' offers; exactly-at-threshold must NOT (direction check)."""
     answer = ChatAnswer(text="Exactly at the line.", confidence=settings.escalation_confidence_threshold)
 
-    result = handle_answer(session, chat_session.chat_session_id, answer)
+    result = handle_answer(answer)
 
-    assert result.escalated is False
+    assert result.escalation_offered is False
     assert result.text == "Exactly at the line."
-    session.expire_all()
-    assert _tickets_for_session(session, chat_session.chat_session_id) == []
 
 
-# ---------------------------------------------------------------------------
-# Low confidence: escalate, exactly one ticket + notification, fallback text
-# ---------------------------------------------------------------------------
-
-
-def test_low_confidence_answer_escalates_creates_one_ticket_and_notification(session):
-    chat_session = _make_chat_session(session, "LC1")
-    raw_text = "I think maybe the device is possibly offline?"
-    answer = ChatAnswer(text=raw_text, confidence=0.1)
+def test_low_confidence_answer_offers_escalation_with_the_exact_fallback_text():
+    answer = ChatAnswer(text="I think maybe the device is possibly offline?", confidence=0.1)
     assert answer.confidence < settings.escalation_confidence_threshold
 
-    result = handle_answer(session, chat_session.chat_session_id, answer)
+    result = handle_answer(answer)
 
-    assert result.escalated is True
-    assert result.text == FALLBACK_TEXT
     assert result.text is FALLBACK_TEXT  # exact constant reused, not retyped
-    assert result.support_ticket_id is not None
+    assert "possibly offline" not in result.text
+    assert result.escalation_offered is True
+    # Offered, NOT escalated: nothing exists yet until the customer says yes.
+    assert result.escalated is False
+    assert result.support_ticket_id is None
 
-    # Re-fetch from the DB (not the in-memory return value) to prove a real
-    # round-trip: exactly one SupportTicket for this session.
-    session.expire_all()
-    tickets = _tickets_for_session(session, chat_session.chat_session_id)
-    assert len(tickets) == 1
-    ticket = tickets[0]
-    assert ticket.support_ticket_id == result.support_ticket_id
-    assert ticket.customer_id == chat_session.customer_id
-    assert ticket.device_id == chat_session.device_id
 
-    # Exactly one Notification, linked to that ticket.
-    notifications = list(
-        session.execute(
-            select(Notification).where(Notification.support_ticket_id == ticket.support_ticket_id)
-        )
-        .scalars()
-        .all()
+def test_handle_answer_cannot_create_database_rows():
+    """Opt-in guard: `handle_answer` takes no `Session`, so it has no way to
+    create a ticket implicitly. Re-adding a `db` parameter would be the
+    first step back toward silent auto-escalation -- this test should fail
+    loudly if that happens."""
+    assert list(inspect.signature(handle_answer).parameters) == ["chat_answer"]
+
+
+# ---------------------------------------------------------------------------
+# get_or_create_escalation_ticket: the explicit-confirm path's ticket helper
+# ---------------------------------------------------------------------------
+
+
+def test_creates_exactly_one_ticket_and_one_in_app_notification(session):
+    chat_session = _make_chat_session(session, "GC1")
+
+    ticket = get_or_create_escalation_ticket(
+        session,
+        chat_session,
+        description="Customer question: why?\n\nAssistant answer: fallback",
     )
-    assert len(notifications) == 1
-    notification = notifications[0]
-    assert notification.customer_id == chat_session.customer_id
-    assert notification.message  # a real, non-empty message was recorded
-
-
-def test_low_confidence_answer_returns_fallback_text_not_raw_llm_text(session):
-    chat_session = _make_chat_session(session, "LC2")
-    answer = ChatAnswer(text="some unreliable raw LLM guess", confidence=0.0)
-
-    result = handle_answer(session, chat_session.chat_session_id, answer)
-
-    assert result.text == FALLBACK_TEXT
-    assert "unreliable raw LLM guess" not in result.text
-
-
-def test_unknown_chat_session_raises_value_error(session):
-    answer = ChatAnswer(text="doesn't matter", confidence=0.0)
-
-    with pytest.raises(ValueError):
-        handle_answer(session, 999_999, answer)
-
-
-def test_escalating_twice_for_same_session_reuses_the_same_ticket(session):
-    """Final-review Fix 2 regression test: a second low-confidence answer in
-    the SAME session used to hit Task 8's DB-level ChatSession 1 -> 0..1
-    SupportTicket UNIQUE constraint and raise an unhandled `IntegrityError`
-    (-> 500 at the API layer). `handle_answer` must instead select for the
-    existing ticket first and reuse it -- no error, no second ticket, no
-    second notification."""
-    chat_session = _make_chat_session(session, "LC3")
-    first_answer = ChatAnswer(text="first low-confidence answer", confidence=0.0)
-    first_result = handle_answer(session, chat_session.chat_session_id, first_answer)
-    assert first_result.escalated is True
-    assert first_result.support_ticket_id is not None
-
-    second_answer = ChatAnswer(text="second low-confidence answer", confidence=0.0)
-    second_result = handle_answer(session, chat_session.chat_session_id, second_answer)
-
-    assert second_result.escalated is True
-    assert second_result.text == FALLBACK_TEXT
-    assert second_result.support_ticket_id == first_result.support_ticket_id
+    session.commit()
 
     session.expire_all()
     tickets = _tickets_for_session(session, chat_session.chat_session_id)
     assert len(tickets) == 1
+    assert tickets[0].support_ticket_id == ticket.support_ticket_id
+    assert tickets[0].customer_id == chat_session.customer_id
+    assert tickets[0].device_id == chat_session.device_id
+    assert tickets[0].subject
+    assert tickets[0].description == "Customer question: why?\n\nAssistant answer: fallback"
 
-    # Only the FIRST escalation should have created a Notification -- the
-    # second call reused the ticket rather than creating a duplicate.
-    notifications = list(
-        session.execute(
-            select(Notification).where(
-                Notification.support_ticket_id == first_result.support_ticket_id
-            )
-        )
-        .scalars()
-        .all()
-    )
+    notifications = _notifications_for_ticket(session, ticket.support_ticket_id)
     assert len(notifications) == 1
+    assert notifications[0].customer_id == chat_session.customer_id
+    assert notifications[0].notification_type == PreferredNotificationMethod.IN_APP
+    assert notifications[0].message
+
+
+def test_second_call_reuses_the_ticket_without_a_second_notification(session):
+    """Double-click safety: `ChatSession 1 -> 0..1 SupportTicket` is a DB
+    UNIQUE constraint, so a second call must select-and-reuse, not raise
+    `IntegrityError` -- and must not notify the customer twice."""
+    chat_session = _make_chat_session(session, "GC2")
+
+    first = get_or_create_escalation_ticket(session, chat_session, description="first")
+    second = get_or_create_escalation_ticket(session, chat_session, description="second")
+    session.commit()
+
+    assert second.support_ticket_id == first.support_ticket_id
+    session.expire_all()
+    assert len(_tickets_for_session(session, chat_session.chat_session_id)) == 1
+    assert len(_notifications_for_ticket(session, first.support_ticket_id)) == 1
 
 
 def test_concurrent_ticket_race_recovers_via_savepoint_without_losing_other_staged_work(
     session, monkeypatch
 ):
     """Defense-in-depth path (final-review Fix 6 interaction): simulates the
-    genuinely concurrent race two simultaneous low-confidence answers for
-    the same session could hit -- the initial SELECT misses a ticket a
-    "concurrent" insert already created, so `create_support_ticket`'s
-    INSERT hits the real UNIQUE constraint.
+    genuinely concurrent race two simultaneous "Yes" clicks for the same
+    session could hit -- the initial SELECT misses a ticket a "concurrent"
+    insert already created, so `create_support_ticket`'s INSERT hits the
+    real UNIQUE constraint.
 
-    `_get_or_create_escalation_ticket` must recover via its except-block
+    `get_or_create_escalation_ticket` must recover via its except-block
     re-select (finding the real, already-flushed ticket) AND must NOT roll
     back unrelated work staged earlier in the same outer transaction --
     proving the `db.begin_nested()` SAVEPOINT scopes the rollback to only
-    the failed insert, not the whole transaction. This matters because Fix 6
-    made `handle_answer` run mid-way through `POST /chat`'s single
-    request-wide transaction (one `db.commit()` at the very end) -- a plain
-    `db.rollback()` here would wipe out everything staged so far in that
-    request, e.g. `other_chat_session` below (standing in for the request's
-    own newly-created `ChatSession`), not just the failed duplicate insert.
+    the failed insert, not the whole transaction.
     """
     chat_session = _make_chat_session(session, "RACE1")
-    # Stand-in for other work staged earlier in the SAME outer transaction
-    # (e.g. a newly-created ChatSession earlier in the same POST /chat
-    # request) -- must survive the SAVEPOINT-scoped recovery below.
+    # Stand-in for other work staged earlier in the SAME outer transaction.
     other_chat_session = _make_chat_session(session, "RACE1-OTHER")
 
-    # Stand-in for "a concurrent request already won the race": a real
-    # SupportTicket for `chat_session`, flushed -- exactly as visible within
-    # this transaction as anything else here.
+    # Stand-in for "a concurrent request already won the race".
     winning_ticket = create_support_ticket(
         session,
         chat_session_id=chat_session.chat_session_id,
@@ -277,10 +231,8 @@ def test_concurrent_ticket_race_recovers_via_savepoint_without_losing_other_stag
         subject="Concurrent request's ticket",
     )
 
-    # Force exactly the NEXT `.one_or_none()` call -- `_get_or_create_
-    # escalation_ticket`'s own initial select-first check -- to report
-    # "nothing found", the way a genuine race's SELECT would if it ran just
-    # before the other transaction's insert became visible.
+    # Force exactly the NEXT `.one_or_none()` call -- the helper's own
+    # initial select-first check -- to report "nothing found".
     original_one_or_none = SAQuery.one_or_none
     state = {"missed_once": False}
 
@@ -292,14 +244,11 @@ def test_concurrent_ticket_race_recovers_via_savepoint_without_losing_other_stag
 
     monkeypatch.setattr(SAQuery, "one_or_none", _miss_once)
 
-    answer = ChatAnswer(text="a low-confidence answer", confidence=0.0)
-    ticket = _get_or_create_escalation_ticket(
-        session, chat_session, answer, notification_type=PreferredNotificationMethod.IN_APP
+    ticket = get_or_create_escalation_ticket(
+        session, chat_session, description="a low-confidence answer"
     )
 
     assert ticket.support_ticket_id == winning_ticket.support_ticket_id
 
-    # The unrelated staged work survived -- the SAVEPOINT rollback did NOT
-    # take down the whole transaction.
     session.expire_all()
     assert session.get(ChatSession, other_chat_session.chat_session_id) is not None

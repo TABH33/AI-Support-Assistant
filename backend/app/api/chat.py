@@ -111,9 +111,21 @@ class ChatResponse(BaseModel):
 
     `message_id`: the persisted `ChatMessage.chat_message_id` of the
     assistant's turn (added in Task 22) -- the frontend needs this to submit
-    thumbs up/down feedback against the exact message via
-    `PATCH /chat/messages/{message_id}/feedback`, since nothing else in this
-    response identifies which `ChatMessage` row the answer became.
+    thumbs up/down feedback via
+    `PATCH /chat/messages/{message_id}/feedback`, and to accept an
+    escalation offer via `POST /chat/messages/{message_id}/escalate`, since
+    nothing else in this response identifies which `ChatMessage` row the
+    answer became.
+
+    `escalation_offered`: True only on a low-confidence RAG turn, where
+    `answer` is the fixed fallback text -- the widget should ask the
+    customer whether to escalate to a human. Nothing has been escalated yet
+    (see docs/superpowers/specs/2026-09-30-demo-routes-and-escalation-design.md).
+
+    `escalated`: "a ticket now exists for this exchange". Since escalation
+    became opt-in this is always False on `POST /chat` -- it is only ever
+    set by the explicit-confirm endpoint (or a thumbs-down), which report
+    it on their own responses.
     """
 
     session_id: int
@@ -121,6 +133,7 @@ class ChatResponse(BaseModel):
     answer: str
     confidence: float
     escalated: bool
+    escalation_offered: bool
     route_plan: RoutePlanResponse | None = None
 
 
@@ -462,6 +475,7 @@ def post_chat(
                 route_plan_payload = route_result
         confidence = 1.0
         escalated = False
+        escalation_offered = False
         audit_action = ACTION_ROUTE_PLAN_GENERATED
     elif todays_routes_intent:
         # SECURITY FIX: always scope to THIS session's own customer_id,
@@ -481,6 +495,7 @@ def post_chat(
         answer_text = summarize_todays_routes(db, customer_id=customer_id)
         confidence = 1.0
         escalated = False
+        escalation_offered = False
         audit_action = ACTION_ROUTE_PLAN_GENERATED
     elif report_intent is not None:
         report_text = (
@@ -491,6 +506,7 @@ def post_chat(
         answer_text = report_text
         confidence = 1.0
         escalated = False
+        escalation_offered = False
         audit_action = ACTION_REPORT_GENERATED
     else:
         retrieved_context = retrieve_context(
@@ -502,10 +518,14 @@ def post_chat(
             db=db,
         )
         chat_answer = answer_query(payload.query, retrieved_context)
-        escalation_result = handle_answer(db, chat_session.chat_session_id, chat_answer)
+        # Opt-in escalation: handle_answer only decides whether to OFFER a
+        # human hand-off. It never creates a ticket -- that happens only if
+        # the customer accepts, via POST /chat/messages/{id}/escalate.
+        escalation_result = handle_answer(chat_answer)
         answer_text = escalation_result.text
         confidence = chat_answer.confidence
         escalated = escalation_result.escalated
+        escalation_offered = escalation_result.escalation_offered
         audit_action = ACTION_CHAT_ANSWER
 
     assistant_message = ChatMessage(
@@ -522,10 +542,12 @@ def post_chat(
     )
     db.add(assistant_message)
     # Flush (not commit) -- final-review Fix 6: this whole request (session
-    # creation, escalation ticket/notification, both ChatMessage rows, and
-    # the audit log entry below) is ONE transaction, committed exactly once
-    # at the end. Before this fix, session/ticket/notification/message
-    # persistence were each their own separate commit, so a failure between
+    # creation, both ChatMessage rows, and the audit log entry below) is ONE
+    # transaction, committed exactly once at the end. (Since escalation
+    # became opt-in, this route no longer stages a SupportTicket/Notification
+    # at all -- see `handle_answer`.) Before this fix,
+    # session/ticket/notification/message persistence were each their own
+    # separate commit, so a failure between
     # e.g. the ticket commit and this message commit could strand a
     # SupportTicket pointing at a ChatSession with zero messages -- nothing
     # for a support agent to act on. `db.flush()` still assigns
@@ -551,14 +573,14 @@ def post_chat(
         action=audit_action,
         description=(
             f"chat_session_id={chat_session.chat_session_id} "
-            f"confidence={confidence:.3f} escalated={escalated}"
+            f"confidence={confidence:.3f} escalated={escalated} "
+            f"escalation_offered={escalation_offered}"
         ),
     )
 
     # The single commit for the entire request -- everything staged above
-    # (possibly-new ChatSession, possibly-new SupportTicket/Notification,
-    # both ChatMessage rows, the AuditLog row) becomes durable together, or
-    # not at all.
+    # (possibly-new ChatSession, both ChatMessage rows, the AuditLog row)
+    # becomes durable together, or not at all.
     db.commit()
 
     return ChatResponse(
@@ -567,6 +589,7 @@ def post_chat(
         answer=answer_text,
         confidence=confidence,
         escalated=escalated,
+        escalation_offered=escalation_offered,
         route_plan=(
             route_plan_result_to_response(route_plan_payload, route_plan_id=saved_route_plan_id)
             if route_plan_payload is not None

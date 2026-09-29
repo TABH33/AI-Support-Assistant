@@ -28,7 +28,7 @@ tests, not re-implemented here:
     `SupportTicket.chat_session_id`. A second `create_support_ticket()` call
     for the same `chat_session_id` will raise `sqlalchemy.exc.IntegrityError`
     on flush -- callers that want a friendlier error should catch that
-    themselves (see `app.ai.escalation._get_or_create_escalation_ticket` and
+    themselves (see `app.ai.escalation.get_or_create_escalation_ticket` and
     `app.api.chat._get_or_create_feedback_escalation_ticket`); this layer
     does not swallow or translate it.
   * SupportTicket 1 -> Many Notification, via `Notification.support_ticket_id`

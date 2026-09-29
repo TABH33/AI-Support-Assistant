@@ -268,10 +268,13 @@ def test_chat_answer_produces_audit_log_entry(client, db_session, fleet):
     assert f"confidence={body['confidence']:.3f}" in entry.description
 
 
-def test_escalated_chat_answer_audit_log_notes_escalation(client, db_session, fleet):
-    """Low-confidence (empty-context) answers get auto-escalated by Task 14
-    -- the audit entry must reflect `escalated=True`, not just log
-    unconditionally with a stale/default value."""
+def test_low_confidence_chat_answer_audit_log_notes_the_escalation_offer(
+    client, db_session, fleet
+):
+    """Low-confidence (empty-context) answers are now only OFFERED
+    escalation (opt-in) -- the audit entry must record
+    `escalation_offered=True` and `escalated=False`, not a stale/default
+    value."""
     with patch(
         "app.ai.chat_service.chat_completion",
         return_value="Generic answer with no grounding at all.",
@@ -283,11 +286,13 @@ def test_escalated_chat_answer_audit_log_notes_escalation(client, db_session, fl
         )
     assert response.status_code == 200
     body = response.json()
-    assert body["escalated"] is True
+    assert body["escalation_offered"] is True
+    assert body["escalated"] is False
 
     db_session.expire_all()
     entry = db_session.query(AuditLog).filter_by(action=ACTION_CHAT_ANSWER).one()
-    assert "escalated=True" in entry.description
+    assert "escalated=False" in entry.description
+    assert "escalation_offered=True" in entry.description
 
 
 # ---------------------------------------------------------------------------
