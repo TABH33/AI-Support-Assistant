@@ -30,11 +30,17 @@ export interface ChatResponse {
   session_id: number
   /** `ChatMessage.chat_message_id` of the assistant's turn (Task 22) --
    * needed to submit thumbs up/down feedback via
-   * `PATCH /chat/messages/{message_id}/feedback`. */
+   * `PATCH /chat/messages/{message_id}/feedback`, and to accept an
+   * escalation offer via `POST /chat/messages/{message_id}/escalate`. */
   message_id: number
   answer: string
   confidence: number
+  /** "A ticket now exists for this exchange." Always `false` from
+   * `POST /chat` since escalation became opt-in. */
   escalated: boolean
+  /** `true` on a low-confidence answer: the widget should ASK whether to
+   * escalate to a human. Nothing has been escalated yet. */
+  escalation_offered: boolean
   /** Structured route data -- only present when this turn answered a
    * route-plan chat intent successfully (route-planning + warnings
    * feature). See backend/app/api/chat.py's ChatResponse. */
@@ -56,6 +62,15 @@ export interface ChatMessageFeedbackResponse {
   feedback: boolean
   escalated: boolean
   support_ticket_id: number | null
+}
+
+/** `POST /chat/messages/{message_id}/escalate` response
+ * (`ChatMessageEscalateResponse` in `backend/app/api/chat.py`). The ticket
+ * always exists on a 200; `email_sent: false` only means the notification
+ * email could not be delivered. */
+export interface ChatMessageEscalateResponse {
+  support_ticket_id: number
+  email_sent: boolean
 }
 
 /** `score`: Customer Effort Score, 1 (very easy) - 7 (very difficult) --

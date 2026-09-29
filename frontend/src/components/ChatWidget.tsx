@@ -60,6 +60,19 @@
  * round-trip has completed). `surveyResolved` (a plain boolean, not reset
  * on reopen) ensures it's shown at most once per widget instance/session,
  * whether the user submits a score or skips.
+ *
+ * **Opt-in escalation** (docs/superpowers/specs/2026-09-30-demo-routes-and-
+ * escalation-design.md): a low-confidence answer arrives with
+ * `escalation_offered: true` instead of an auto-created ticket. That message
+ * shows "Would you like to escalate this to a human? [Yes] [No]" in the same
+ * spot as the feedback buttons. **No** is purely local (nothing is sent).
+ * **Yes** calls `POST /chat/messages/{message_id}/escalate` (disabled while
+ * in flight, so a double-click sends one request) and then shows "A support
+ * agent has been notified (ref #N)" -- with "(email notification could not
+ * be sent)" appended when `email_sent` is false, since the ticket exists
+ * either way -- and marks the message `escalated`, reusing the same amber
+ * label a thumbs-down escalation already gets. A failed request restores
+ * the prompt and surfaces the error.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiGet, apiPatch, apiPost } from '../lib/apiClient'
@@ -67,9 +80,20 @@ import { useAuth } from '../context/AuthProvider'
 import { useSelection } from '../context/SelectionContext'
 import { CesSurvey } from './CesSurvey'
 import { RouteMap } from './RouteMap'
-import type { ChatMessageFeedbackResponse, ChatRequest, ChatResponse } from '../types/chat'
+import type {
+  ChatMessageEscalateResponse,
+  ChatMessageFeedbackResponse,
+  ChatRequest,
+  ChatResponse,
+} from '../types/chat'
 import type { Device } from '../types/telematics'
 import type { RoutePlanResult } from '../types/routePlan'
+
+/** Lifecycle of an escalation offer on one assistant message:
+ * `offered` (prompt shown) -> `sending` (Yes clicked, request in flight) ->
+ * `confirmed`; or `offered` -> `dismissed` (No). A failed request goes
+ * `sending` -> back to `offered`. */
+type EscalationStatus = 'offered' | 'sending' | 'dismissed' | 'confirmed'
 
 interface ChatWidgetMessage {
   id: string
@@ -79,7 +103,8 @@ interface ChatWidgetMessage {
   escalated?: boolean
   /** `ChatMessage.chat_message_id` (Task 22) -- only set on assistant
    * messages, since only those can receive feedback. Used to target
-   * `PATCH /chat/messages/{chatMessageId}/feedback`. */
+   * `PATCH /chat/messages/{chatMessageId}/feedback` and
+   * `POST /chat/messages/{chatMessageId}/escalate`. */
   chatMessageId?: number
   /** Thumbs up (`true`) / down (`false`) / not yet rated (`undefined`).
    * Only meaningful on assistant messages. */
@@ -88,6 +113,12 @@ interface ChatWidgetMessage {
    * on an assistant message that answered a route-plan chat intent
    * successfully. Rendered as an inline map beside the transcript. */
   routePlan?: RoutePlanResult
+  /** Set only on an assistant message whose response had
+   * `escalation_offered: true`. See `EscalationStatus`. */
+  escalationStatus?: EscalationStatus
+  /** From `ChatMessageEscalateResponse`, once `escalationStatus` is `confirmed`. */
+  escalationTicketId?: number
+  escalationEmailSent?: boolean
 }
 
 /** sessionStorage key used to remember "the disclosure banner has already been shown this browser session" (POC-level persistence, per the task brief). */
@@ -281,6 +312,38 @@ export function ChatWidget() {
     }
   }, [])
 
+  const patchMessage = useCallback((messageId: string, patch: Partial<ChatWidgetMessage>) => {
+    setMessages((prev) => prev.map((message) => (message.id === messageId ? { ...message, ...patch } : message)))
+  }, [])
+
+  const handleEscalationChoice = useCallback(
+    async (messageId: string, chatMessageId: number, accept: boolean) => {
+      if (!accept) {
+        // "No" is purely local -- nothing is sent to the backend.
+        patchMessage(messageId, { escalationStatus: 'dismissed' })
+        return
+      }
+
+      patchMessage(messageId, { escalationStatus: 'sending' })
+      try {
+        const response = await apiPost<ChatMessageEscalateResponse>(`/chat/messages/${chatMessageId}/escalate`, {})
+        patchMessage(messageId, {
+          escalationStatus: 'confirmed',
+          escalationTicketId: response.support_ticket_id,
+          escalationEmailSent: response.email_sent,
+          // A ticket now exists -- reuse the same "Escalated" rendering the
+          // thumbs-down path already gives (see handleFeedback above).
+          escalated: true,
+        })
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to escalate to a human.')
+        // Nothing was escalated -- put the offer back so the user can retry.
+        patchMessage(messageId, { escalationStatus: 'offered' })
+      }
+    },
+    [patchMessage]
+  )
+
   const handleSend = useCallback(async () => {
     const query = inputValue.trim()
     if (!query || isSending) return
@@ -335,6 +398,7 @@ export function ChatWidget() {
           escalated: response.escalated,
           chatMessageId: response.message_id,
           routePlan: response.route_plan ?? undefined,
+          escalationStatus: response.escalation_offered ? 'offered' : undefined,
         },
       ])
     } catch (err) {
@@ -433,6 +497,45 @@ export function ChatWidget() {
                       )}
                       <p>{message.content}</p>
                     </div>
+                    {message.role === 'assistant' &&
+                      message.chatMessageId !== undefined &&
+                      (message.escalationStatus === 'offered' || message.escalationStatus === 'sending') && (
+                        <div
+                          data-testid="chat-escalation-offer"
+                          className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300"
+                        >
+                          <span>Would you like to escalate this to a human?</span>
+                          <button
+                            type="button"
+                            disabled={message.escalationStatus === 'sending'}
+                            onClick={() =>
+                              void handleEscalationChoice(message.id, message.chatMessageId as number, true)
+                            }
+                            className="rounded bg-indigo-600 px-2 py-0.5 font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                          >
+                            Yes
+                          </button>
+                          <button
+                            type="button"
+                            disabled={message.escalationStatus === 'sending'}
+                            onClick={() =>
+                              void handleEscalationChoice(message.id, message.chatMessageId as number, false)
+                            }
+                            className="rounded border border-gray-300 px-2 py-0.5 font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+                          >
+                            No
+                          </button>
+                        </div>
+                      )}
+                    {message.role === 'assistant' && message.escalationStatus === 'confirmed' && (
+                      <p
+                        data-testid="chat-escalation-confirmation"
+                        className="mt-1 text-xs text-gray-600 dark:text-gray-300"
+                      >
+                        A support agent has been notified (ref #{message.escalationTicketId})
+                        {message.escalationEmailSent ? '' : ' (email notification could not be sent)'}
+                      </p>
+                    )}
                     {message.role === 'assistant' && message.chatMessageId !== undefined && (
                       <div
                         data-testid="chat-feedback-controls"

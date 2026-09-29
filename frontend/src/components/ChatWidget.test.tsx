@@ -117,14 +117,19 @@ function loginAsSupportAgent() {
 /**
  * Routes mocked `fetch` calls to `GET /devices` (customer-100-scoped by
  * default, customer-200-scoped when `?customer_id=200` is present),
- * `POST /chat`, `PATCH /chat/messages/{id}/feedback`, and
- * `POST /chat/sessions/{id}/survey` fixture responses.
+ * `POST /chat`, `PATCH /chat/messages/{id}/feedback`,
+ * `POST /chat/messages/{id}/escalate`, and `POST /chat/sessions/{id}/survey`
+ * fixture responses.
  *
- * `/feedback`/`/survey` are checked BEFORE the generic `/chat` check below,
- * since both of those URLs (`/chat/messages/{id}/feedback`,
- * `/chat/sessions/{id}/survey`) also contain the substring `/chat`.
+ * `/feedback`, `/escalate` and `/survey` are checked BEFORE the generic
+ * `/chat` check below, since all three URLs also contain the substring
+ * `/chat`.
  */
-function mockChatFetch({ escalated = false }: { escalated?: boolean } = {}) {
+function mockChatFetch({
+  escalated = false,
+  escalationOffered = false,
+  emailSent = true,
+}: { escalated?: boolean; escalationOffered?: boolean; emailSent?: boolean } = {}) {
   ;(fetch as unknown as Mock).mockImplementation(async (url: string, options?: RequestInit) => {
     if (url.includes('/feedback')) {
       const body = JSON.parse((options?.body as string) ?? '{}')
@@ -137,6 +142,13 @@ function mockChatFetch({ escalated = false }: { escalated?: boolean } = {}) {
           escalated: body.feedback === false,
           support_ticket_id: body.feedback === false ? 901 : null,
         }),
+      }
+    }
+    if (url.includes('/escalate')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ support_ticket_id: 901, email_sent: emailSent }),
       }
     }
     if (url.includes('/survey')) {
@@ -155,17 +167,19 @@ function mockChatFetch({ escalated = false }: { escalated?: boolean } = {}) {
       return { ok: true, status: 200, json: async () => customerADevices }
     }
     if (url.includes('/chat')) {
+      const notConfident = escalated || escalationOffered
       return {
         ok: true,
         status: 200,
         json: async () => ({
           session_id: 42,
           message_id: 555,
-          answer: escalated
+          answer: notConfident
             ? "I'm not confident enough to answer that -- a human agent will follow up."
             : 'Your vehicle traveled 42.5 km on its last trip.',
-          confidence: escalated ? 0.1 : 0.95,
+          confidence: notConfident ? 0.1 : 0.95,
           escalated,
+          escalation_offered: escalationOffered,
         }),
       }
     }
@@ -768,6 +782,153 @@ describe('ChatWidget', () => {
       const dialog = screen.getByRole('dialog', { name: /ai chat assistant/i })
       expect(dialog.className).toContain('w-80')
       expect(dialog.className).not.toContain('w-[44rem]')
+    })
+  })
+
+  describe('opt-in escalation offer', () => {
+    const NOT_CONFIDENT = "I'm not confident enough to answer that -- a human agent will follow up."
+
+    async function sendAndWaitForNotConfidentAnswer() {
+      await openWidget()
+      await sendMessage('Why is my device offline?')
+      await waitFor(() => {
+        expect(screen.getByText(NOT_CONFIDENT)).toBeInTheDocument()
+      })
+    }
+
+    function escalateCalls() {
+      return (fetch as unknown as Mock).mock.calls.filter(([url]) => (url as string).includes('/escalate'))
+    }
+
+    it('shows the Yes/No prompt on an answer whose escalation_offered is true', async () => {
+      mockChatFetch({ escalationOffered: true })
+      renderWidget()
+
+      await sendAndWaitForNotConfidentAnswer()
+
+      const offer = screen.getByTestId('chat-escalation-offer')
+      expect(offer).toHaveTextContent('Would you like to escalate this to a human?')
+      expect(screen.getByRole('button', { name: /^yes$/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /^no$/i })).toBeInTheDocument()
+      // Offered is not escalated: no amber "Escalated" label yet.
+      expect(screen.queryByTestId('chat-escalation-label')).not.toBeInTheDocument()
+    })
+
+    it('does not show the prompt when escalation_offered is false', async () => {
+      mockChatFetch()
+      renderWidget()
+
+      await openWidget()
+      await sendMessage('How far did my vehicle travel?')
+      await waitFor(() => {
+        expect(screen.getByText('Your vehicle traveled 42.5 km on its last trip.')).toBeInTheDocument()
+      })
+
+      expect(screen.queryByTestId('chat-escalation-offer')).not.toBeInTheDocument()
+    })
+
+    it('Yes POSTs /chat/messages/{message_id}/escalate and replaces the prompt with the ref-number confirmation', async () => {
+      mockChatFetch({ escalationOffered: true })
+      renderWidget()
+      await sendAndWaitForNotConfidentAnswer()
+
+      fireEvent.click(screen.getByRole('button', { name: /^yes$/i }))
+
+      await waitFor(() => {
+        expect(screen.getByTestId('chat-escalation-confirmation')).toBeInTheDocument()
+      })
+      const confirmation = screen.getByTestId('chat-escalation-confirmation')
+      expect(confirmation).toHaveTextContent('A support agent has been notified (ref #901)')
+      expect(confirmation).not.toHaveTextContent(/could not be sent/)
+      expect(screen.queryByTestId('chat-escalation-offer')).not.toBeInTheDocument()
+      // The message now reads as escalated, same as the thumbs-down path.
+      expect(screen.getByTestId('chat-escalation-label')).toBeInTheDocument()
+
+      const calls = escalateCalls()
+      expect(calls).toHaveLength(1)
+      const [escalateUrl, options] = calls[0] as [string, RequestInit]
+      expect(escalateUrl).toContain('/chat/messages/555/escalate')
+      expect(options.method).toBe('POST')
+    })
+
+    it('says the email could not be sent when email_sent is false, without saying escalation failed', async () => {
+      mockChatFetch({ escalationOffered: true, emailSent: false })
+      renderWidget()
+      await sendAndWaitForNotConfidentAnswer()
+
+      fireEvent.click(screen.getByRole('button', { name: /^yes$/i }))
+
+      await waitFor(() => {
+        expect(screen.getByTestId('chat-escalation-confirmation')).toHaveTextContent(
+          'A support agent has been notified (ref #901) (email notification could not be sent)'
+        )
+      })
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    })
+
+    it('No dismisses the prompt locally and sends no request', async () => {
+      mockChatFetch({ escalationOffered: true })
+      renderWidget()
+      await sendAndWaitForNotConfidentAnswer()
+
+      fireEvent.click(screen.getByRole('button', { name: /^no$/i }))
+
+      expect(screen.queryByTestId('chat-escalation-offer')).not.toBeInTheDocument()
+      expect(screen.queryByTestId('chat-escalation-confirmation')).not.toBeInTheDocument()
+      expect(escalateCalls()).toHaveLength(0)
+      // Thumbs up/down stay available on the same message.
+      expect(screen.getByTestId('chat-feedback-controls')).toBeInTheDocument()
+    })
+
+    it('disables Yes while the request is in flight, so a double-click sends exactly one request', async () => {
+      mockChatFetch({ escalationOffered: true })
+      renderWidget()
+      await sendAndWaitForNotConfidentAnswer()
+
+      let resolveEscalate: (value: unknown) => void = () => {}
+      ;(fetch as unknown as Mock).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveEscalate = resolve
+          })
+      )
+
+      const yesButton = screen.getByRole('button', { name: /^yes$/i })
+      fireEvent.click(yesButton)
+      expect(yesButton).toBeDisabled()
+      fireEvent.click(yesButton)
+
+      resolveEscalate({
+        ok: true,
+        status: 200,
+        json: async () => ({ support_ticket_id: 901, email_sent: true }),
+      })
+      await waitFor(() => {
+        expect(screen.getByTestId('chat-escalation-confirmation')).toBeInTheDocument()
+      })
+      expect(escalateCalls()).toHaveLength(1)
+    })
+
+    it('restores the prompt and shows an error when the escalate request fails', async () => {
+      mockChatFetch({ escalationOffered: true })
+      renderWidget()
+      await sendAndWaitForNotConfidentAnswer()
+
+      ;(fetch as unknown as Mock).mockImplementationOnce(async () => ({
+        ok: false,
+        status: 500,
+        statusText: 'Internal Server Error',
+        json: async () => ({}),
+      }))
+
+      fireEvent.click(screen.getByRole('button', { name: /^yes$/i }))
+
+      await waitFor(() => {
+        expect(screen.getByRole('alert')).toBeInTheDocument()
+      })
+      expect(screen.getByTestId('chat-escalation-offer')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /^yes$/i })).not.toBeDisabled()
+      expect(screen.queryByTestId('chat-escalation-confirmation')).not.toBeInTheDocument()
     })
   })
 })
