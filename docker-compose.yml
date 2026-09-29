@@ -52,6 +52,18 @@ services:
       # when it is set in the host .env -- keep this list in sync with
       # backend/.env.example.
       ORS_API_KEY: ${ORS_API_KEY:-}
+      # Opt-in chat escalation email (app/integrations/email.py). All
+      # optional: an empty SMTP_HOST is treated as "not configured" -- the
+      # escalation ticket is still created, only the email is skipped
+      # (email_sent=false). Listed here for the same reason as ORS_API_KEY
+      # above: a var missing from this block never reaches the container.
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      ESCALATION_EMAIL_TO: ${ESCALATION_EMAIL_TO:-CIHE241731@student.edu.cihe.au}
     ports:
       - "8000:8000"
     depends_on:

@@ -65,3 +65,14 @@ def test_settings_has_ors_api_key_field_with_empty_default():
     assert "ors_api_key" in Settings.model_fields
     assert Settings.model_fields["ors_api_key"].default == ""
     assert isinstance(settings.ors_api_key, str)
+
+
+def test_settings_has_optional_smtp_fields_with_spec_defaults():
+    fields = Settings.model_fields
+    assert fields["smtp_host"].default == ""
+    assert fields["smtp_port"].default == 587
+    assert fields["smtp_username"].default == ""
+    assert fields["smtp_password"].default == ""
+    assert fields["smtp_from_address"].default == ""
+    assert fields["smtp_use_tls"].default is True
+    assert fields["escalation_email_to"].default == "CIHE241731@student.edu.cihe.au"
