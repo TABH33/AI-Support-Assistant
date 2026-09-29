@@ -22,6 +22,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.ai.chat_service import FALLBACK_TEXT
 from app.auth.security import create_access_token, hash_password
 from app.config import settings
 from app.database import get_db
@@ -29,6 +30,7 @@ from app.integrations.email import EmailDeliveryError
 from app.integrations.email import send_escalation_email as real_send_escalation_email
 from app.main import app
 from app.models import (
+    AuditLog,
     Base,
     ChatMessage,
     ChatSession,
@@ -45,6 +47,7 @@ from app.models.enums import (
     PreferredNotificationMethod,
     SessionStatus,
 )
+from app.security.audit import ACTION_ESCALATION_REQUESTED
 
 
 @pytest.fixture()
@@ -131,10 +134,16 @@ def _build_case(db_session: Session, *, tag: str) -> dict:
     )
     db_session.add(user_message)
     db_session.commit()
+    # Content is the exact FALLBACK_TEXT constant, not an arbitrary string:
+    # `escalate_message` only accepts a message that was actually offered
+    # escalation (final-review Fix 1), and `handle_answer` only ever sets
+    # `escalation_offered=True` on a low-confidence answer whose persisted
+    # content is `FALLBACK_TEXT`. The `tag` still differentiates cases via
+    # the preceding user question instead.
     assistant_message = ChatMessage(
         chat_session_id=chat_session.chat_session_id,
         role=ChatMessageRole.ASSISTANT,
-        content=f"{tag}'s answer",
+        content=FALLBACK_TEXT,
     )
     db_session.add(assistant_message)
     db_session.commit()
@@ -229,6 +238,30 @@ def test_escalate_on_a_user_message_is_rejected(client, db_session, case_a, send
     send_email_mock.assert_not_called()
 
 
+def test_escalate_on_a_confident_answer_is_rejected(client, db_session, case_a, send_email_mock):
+    """final-review Fix 1: `escalate_message` must only accept a message that
+    was actually offered escalation -- i.e. one whose content is the exact
+    `FALLBACK_TEXT` constant `handle_answer` swaps in for a low-confidence
+    answer. A confident answer (a route-plan summary, a report, or any other
+    normal `POST /chat` reply) must be rejected outright: no ticket, no
+    email -- not silently ticketed/emailed like any other assistant message
+    would be without this gate."""
+    confident_message = ChatMessage(
+        chat_session_id=case_a["chat_session"].chat_session_id,
+        role=ChatMessageRole.ASSISTANT,
+        content="Your vehicle traveled 42.5 km on its last trip.",
+    )
+    db_session.add(confident_message)
+    db_session.commit()
+    db_session.refresh(confident_message)
+
+    response = _escalate(client, confident_message.chat_message_id, case_a["headers"])
+
+    assert response.status_code == 400
+    assert _tickets(db_session, case_a) == []
+    send_email_mock.assert_not_called()
+
+
 def test_support_agent_can_escalate_any_customers_message(
     client, db_session, case_a, support_agent_headers
 ):
@@ -260,7 +293,7 @@ def test_escalate_creates_one_ticket_and_one_in_app_notification(client, db_sess
     assert ticket.customer_id == case_a["customer"].customer_id
     assert ticket.device_id == case_a["device"].device_id
     assert "A's question" in ticket.description
-    assert "A's answer" in ticket.description
+    assert FALLBACK_TEXT in ticket.description
 
     notifications = (
         db_session.query(Notification).filter_by(support_ticket_id=ticket.support_ticket_id).all()
@@ -278,8 +311,9 @@ def test_email_carries_the_customer_question_answer_and_ticket_id(
         customer_name="Escalate Test Customer A",
         customer_email="escalate-customer-a@example.test",
         question="A's question",
-        answer="A's answer",
+        answer=FALLBACK_TEXT,
         support_ticket_id=response.json()["support_ticket_id"],
+        triggered_by_support_agent=False,
     )
 
 
@@ -296,7 +330,7 @@ def test_question_is_the_user_message_immediately_before_the_escalated_answer(
     later_answer = ChatMessage(
         chat_session_id=case_a["chat_session"].chat_session_id,
         role=ChatMessageRole.ASSISTANT,
-        content="A's later answer",
+        content=FALLBACK_TEXT,
     )
     db_session.add(later_answer)
     db_session.commit()
@@ -308,7 +342,7 @@ def test_question_is_the_user_message_immediately_before_the_escalated_answer(
     first_call, second_call = send_email_mock.call_args_list
     assert first_call.kwargs["question"] == "A's question"
     assert second_call.kwargs["question"] == "A's later question"
-    assert second_call.kwargs["answer"] == "A's later answer"
+    assert second_call.kwargs["answer"] == FALLBACK_TEXT
 
 
 def test_email_is_sent_only_after_the_ticket_is_committed(
@@ -407,6 +441,86 @@ def test_double_click_creates_one_ticket_not_two(client, db_session, case_a, sen
     # a reused ticket -- never report email_sent=false for a mail that was
     # never tried. The widget disables "Yes" while a request is in flight.
     assert send_email_mock.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# final-review Fix 2: audit trail + attribution
+# ---------------------------------------------------------------------------
+
+
+def test_customer_self_escalation_produces_an_attributed_audit_log_entry(
+    client, db_session, case_a
+):
+    response = _escalate(client, case_a["assistant_message"].chat_message_id, case_a["headers"])
+    assert response.status_code == 200
+
+    db_session.expire_all()
+    entries = db_session.query(AuditLog).filter_by(action=ACTION_ESCALATION_REQUESTED).all()
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.actor_id == case_a["customer"].customer_id
+    assert entry.actor_role == "customer"
+    assert f"chat_session_id={case_a['chat_session'].chat_session_id}" in entry.description
+    assert f"support_ticket_id={response.json()['support_ticket_id']}" in entry.description
+
+
+def test_support_agent_escalation_is_attributed_to_the_agent_not_the_customer(
+    client, db_session, case_a, support_agent_headers
+):
+    from app.models.support_agent import SupportAgent
+
+    response = _escalate(
+        client, case_a["assistant_message"].chat_message_id, support_agent_headers
+    )
+    assert response.status_code == 200
+
+    db_session.expire_all()
+    entry = db_session.query(AuditLog).filter_by(action=ACTION_ESCALATION_REQUESTED).one()
+    agent = db_session.query(SupportAgent).one()
+    # `actor_id` alone isn't enough to distinguish a customer from a support
+    # agent -- they're independent auto-increment sequences in different
+    # tables, so a customer_id and a support_agent_id can coincide. The
+    # `actor_role` is what actually attributes this row to the agent, not
+    # the customer whose message was escalated.
+    assert entry.actor_id == agent.support_agent_id
+    assert entry.actor_role == "support_agent"
+
+
+def test_support_agent_escalation_notification_and_email_wording_differs_from_self_escalation(
+    client, db_session, case_a, case_b, support_agent_headers, send_email_mock
+):
+    """Both the in-app `Notification` and the external email must not claim
+    the customer personally asked when a support agent triggered the
+    escalation on their behalf -- comparing the agent-triggered case (case_a)
+    against a customer self-escalation (case_b) proves the wording actually
+    differs, not just that both happen to succeed."""
+    agent_response = _escalate(
+        client, case_a["assistant_message"].chat_message_id, support_agent_headers
+    )
+    assert agent_response.status_code == 200
+    agent_call_kwargs = send_email_mock.call_args_list[-1].kwargs
+    assert agent_call_kwargs["triggered_by_support_agent"] is True
+
+    customer_response = _escalate(client, case_b["assistant_message"].chat_message_id, case_b["headers"])
+    assert customer_response.status_code == 200
+    customer_call_kwargs = send_email_mock.call_args_list[-1].kwargs
+    assert customer_call_kwargs["triggered_by_support_agent"] is False
+
+    db_session.expire_all()
+    agent_ticket = _tickets(db_session, case_a)[0]
+    customer_ticket = _tickets(db_session, case_b)[0]
+    agent_notification = (
+        db_session.query(Notification)
+        .filter_by(support_ticket_id=agent_ticket.support_ticket_id)
+        .one()
+    )
+    customer_notification = (
+        db_session.query(Notification)
+        .filter_by(support_ticket_id=customer_ticket.support_ticket_id)
+        .one()
+    )
+    assert agent_notification.message != customer_notification.message
+    assert "support agent" in agent_notification.message.lower()
 
 
 def test_escalate_reuses_a_ticket_created_earlier_by_a_thumbs_down(client, db_session, case_a):

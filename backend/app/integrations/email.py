@@ -76,6 +76,22 @@ def _require_config() -> tuple[str, str, str]:
     return host, from_address, to_address
 
 
+#: Opening line when the customer themselves accepted the escalation offer.
+_INTRO_CUSTOMER_INITIATED = (
+    "A customer asked for a human to follow up on a chat the AI assistant "
+    "could not confidently answer."
+)
+
+#: final-review Fix 2: a support agent can trigger this same email on a
+#: customer's behalf (`POST /chat/messages/{id}/escalate` allows either
+#: role). The opening line must not claim the customer personally asked
+#: when they didn't.
+_INTRO_SUPPORT_AGENT_INITIATED = (
+    "A support agent escalated a customer's chat on their behalf, after "
+    "the AI assistant could not confidently answer it."
+)
+
+
 def _build_message(
     *,
     from_address: str,
@@ -85,6 +101,7 @@ def _build_message(
     question: str,
     answer: str,
     support_ticket_id: int,
+    triggered_by_support_agent: bool = False,
 ) -> EmailMessage:
     message = EmailMessage()
     message["Subject"] = f"Chat escalation: support ticket #{support_ticket_id}"
@@ -93,9 +110,13 @@ def _build_message(
     if customer_email:
         # Lets the support agent reply straight to the customer.
         message["Reply-To"] = customer_email
+    intro = (
+        _INTRO_SUPPORT_AGENT_INITIATED
+        if triggered_by_support_agent
+        else _INTRO_CUSTOMER_INITIATED
+    )
     message.set_content(
-        "A customer asked for a human to follow up on a chat the AI assistant "
-        "could not confidently answer.\n"
+        f"{intro}\n"
         "\n"
         f"Support ticket reference: #{support_ticket_id}\n"
         f"Customer: {customer_name} <{customer_email}>\n"
@@ -116,12 +137,17 @@ def send_escalation_email(
     question: str,
     answer: str,
     support_ticket_id: int,
+    triggered_by_support_agent: bool = False,
 ) -> None:
     """Send one escalation email to `settings.escalation_email_to`.
 
     Raises EmailNotConfiguredError (no connection attempted) when SMTP isn't
     configured, or EmailDeliveryError when the SMTP conversation fails.
-    Returns None on success."""
+    Returns None on success.
+
+    `triggered_by_support_agent`: varies the opening line so the email
+    doesn't claim the customer personally asked when a support agent
+    escalated on their behalf instead (final-review Fix 2)."""
     host, from_address, to_address = _require_config()
     message = _build_message(
         from_address=from_address,
@@ -131,6 +157,7 @@ def send_escalation_email(
         question=question,
         answer=answer,
         support_ticket_id=support_ticket_id,
+        triggered_by_support_agent=triggered_by_support_agent,
     )
 
     try:

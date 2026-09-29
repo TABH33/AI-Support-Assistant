@@ -43,7 +43,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Query as SAQuery, Session
 
-from app.ai.chat_service import answer_query
+from app.ai.chat_service import FALLBACK_TEXT, answer_query
 from app.ai.escalation import get_or_create_escalation_ticket, handle_answer
 from app.ai.reports import generate_end_of_day_report, generate_start_of_day_report
 from app.ai.retrieval import retrieve_context
@@ -66,6 +66,7 @@ from app.models.enums import ChatMessageRole, PreferredNotificationMethod, Prior
 from app.repositories.chat import create_chat_session, create_notification, create_support_ticket
 from app.security.audit import (
     ACTION_CHAT_ANSWER,
+    ACTION_ESCALATION_REQUESTED,
     ACTION_REPORT_GENERATED,
     ACTION_ROUTE_PLAN_GENERATED,
     record_audit_event,
@@ -937,14 +938,35 @@ def escalate_message(
             detail="Only an assistant message can be escalated",
         )
 
+    # final-review Fix 1: only a message that was actually OFFERED
+    # escalation may be escalated. `handle_answer` only ever sets
+    # `escalation_offered=True` on a low-confidence answer, and in that
+    # exact case the persisted assistant message's content is always the
+    # exact `FALLBACK_TEXT` constant (never the raw LLM text) -- so this
+    # comparison is an equivalent, cheap way to verify eligibility without a
+    # new persisted column. Without this gate, ANY assistant message
+    # (a confident answer, a route-plan summary, a report) could be
+    # escalated repeatedly, sending an external email every time and using
+    # language ("the AI assistant could not confidently answer") that
+    # would be false for a confident answer.
+    if message.content != FALLBACK_TEXT:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Only a message that was offered escalation can be escalated",
+        )
+
     question = _preceding_user_question(db, message)
     answer = message.content
+    triggered_by_support_agent = current_user.role == "support_agent"
 
     # Idempotent: a double-click, a second "Yes" in the same session, or a
     # session that already has a thumbs-down ticket all reuse the one
     # existing ticket (select-first + IntegrityError SAVEPOINT fallback).
     ticket = get_or_create_escalation_ticket(
-        db, chat_session, description=_escalation_ticket_description(question, answer)
+        db,
+        chat_session,
+        description=_escalation_ticket_description(question, answer),
+        triggered_by_support_agent=triggered_by_support_agent,
     )
     customer = db.get(Customer, chat_session.customer_id)
 
@@ -955,7 +977,28 @@ def escalate_message(
     customer_name = customer.full_name
     customer_email = customer.email
 
-    # Failure domain 1: the ticket + in-app notification become durable here.
+    # final-review Fix 2: audit every escalation, same as every other
+    # AI-generated-recommendation action in this codebase (`POST /chat`,
+    # `POST /reports/*`). Notes who actually triggered it -- a customer
+    # escalating their own message, or a support agent escalating on a
+    # customer's behalf -- since neither the ticket nor the notification on
+    # their own record WHO asked. Flushes (not commits), joining this same
+    # transaction, mirroring `record_audit_event`'s own docstring and every
+    # other caller of it.
+    record_audit_event(
+        db,
+        actor_id=current_user.user_id,
+        actor_role=current_user.role,
+        action=ACTION_ESCALATION_REQUESTED,
+        description=(
+            f"chat_session_id={chat_session.chat_session_id} "
+            f"support_ticket_id={support_ticket_id} "
+            f"triggered_by_support_agent={triggered_by_support_agent}"
+        ),
+    )
+
+    # Failure domain 1: the ticket + in-app notification + audit entry
+    # become durable here.
     db.commit()
 
     # Failure domain 2: best-effort external email. Deliberately broad --
@@ -970,6 +1013,7 @@ def escalate_message(
             question=question,
             answer=answer,
             support_ticket_id=support_ticket_id,
+            triggered_by_support_agent=triggered_by_support_agent,
         )
         email_sent = True
     except Exception as exc:  # noqa: BLE001 -- see comment above

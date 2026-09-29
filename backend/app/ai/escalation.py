@@ -42,11 +42,21 @@ _ESCALATION_TICKET_SUBJECT = (
 )
 
 #: Message stored on the in-app `Notification` created when a customer
-#: accepts the escalation offer.
+#: accepts the escalation offer themselves.
 _ESCALATION_NOTIFICATION_MESSAGE = (
     "You asked for your question to be escalated to a support agent after "
     "the AI assistant could not confidently answer it. A support ticket has "
     "been created and an agent will follow up with you."
+)
+
+#: final-review Fix 2: a support agent can trigger this same escalation on a
+#: customer's behalf (`POST /chat/messages/{id}/escalate` allows either
+#: role). The customer-facing notification must not claim the customer
+#: personally asked when they didn't.
+_ESCALATION_NOTIFICATION_MESSAGE_AGENT_INITIATED = (
+    "A support agent escalated your question to a support ticket after "
+    "the AI assistant could not confidently answer it. An agent will "
+    "follow up with you."
 )
 
 
@@ -75,6 +85,7 @@ def get_or_create_escalation_ticket(
     *,
     description: str,
     notification_type: PreferredNotificationMethod = PreferredNotificationMethod.IN_APP,
+    triggered_by_support_agent: bool = False,
 ) -> SupportTicket:
     """Idempotently create (or reuse) this session's escalation ticket,
     mirroring `app.api.chat._get_or_create_feedback_escalation_ticket`'s
@@ -99,6 +110,13 @@ def get_or_create_escalation_ticket(
     else that request had staged, not just the failed insert.
 
     Flushes, never commits -- the caller owns `db.commit()`.
+
+    `triggered_by_support_agent`: a support agent may also trigger this
+    (escalating on a customer's behalf, `POST /chat/messages/{id}/escalate`
+    allows either role) -- when True, the in-app `Notification` created for
+    a genuinely NEW ticket uses wording that doesn't claim the customer
+    personally asked. Has no effect on a reused ticket, since a reused
+    ticket never gets a new `Notification` either way.
     """
     existing = (
         db.query(SupportTicket)
@@ -136,7 +154,11 @@ def get_or_create_escalation_ticket(
         support_ticket_id=ticket.support_ticket_id,
         customer_id=chat_session.customer_id,
         notification_type=notification_type,
-        message=_ESCALATION_NOTIFICATION_MESSAGE,
+        message=(
+            _ESCALATION_NOTIFICATION_MESSAGE_AGENT_INITIATED
+            if triggered_by_support_agent
+            else _ESCALATION_NOTIFICATION_MESSAGE
+        ),
     )
     return ticket
 

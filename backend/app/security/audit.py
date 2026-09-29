@@ -19,6 +19,12 @@ AI-generated recommendation shown to a user --
   * `ACTION_REPORT_GENERATED` -- Task 16's `POST /reports/start-of-day` and
     `POST /reports/end-of-day`, logged once per generated report. Notes
     which report type was generated.
+  * `ACTION_ESCALATION_REQUESTED` -- final-review Fix 2's
+    `POST /chat/messages/{id}/escalate`, logged once per escalation (new
+    ticket or reused one). Notes the chat session/ticket involved and
+    whether the caller was the customer themselves or a support agent
+    escalating on the customer's behalf -- the endpoint had no audit trail
+    or attribution of who triggered it before this fix.
 
 `AuditLog.action` (see `app.models.audit`) is a plain, unconstrained string
 specifically so a future ticket-status-change feature (or any other
@@ -36,6 +42,7 @@ from app.models.audit import AuditLog
 ACTION_CHAT_ANSWER = "chat_answer"
 ACTION_REPORT_GENERATED = "report_generated"
 ACTION_ROUTE_PLAN_GENERATED = "route_plan_generated"
+ACTION_ESCALATION_REQUESTED = "escalation_requested"
 
 
 def record_audit_event(
@@ -77,5 +84,6 @@ __all__ = [
     "ACTION_CHAT_ANSWER",
     "ACTION_REPORT_GENERATED",
     "ACTION_ROUTE_PLAN_GENERATED",
+    "ACTION_ESCALATION_REQUESTED",
     "record_audit_event",
 ]

@@ -84,6 +84,18 @@ def test_message_body_carries_name_question_answer_and_ticket_reference():
     assert "#901" in body
 
 
+def test_body_does_not_claim_the_customer_asked_when_a_support_agent_triggered_it():
+    """final-review Fix 2: when a support agent escalates on a customer's
+    behalf, the email body must not phrase things as if the customer
+    personally asked."""
+    with patch("app.integrations.email.smtplib.SMTP") as mock_smtp_cls:
+        send_escalation_email(**_SEND_KWARGS, triggered_by_support_agent=True)
+
+    body = _sent_message(mock_smtp_cls).get_content().lower()
+    assert "support agent" in body
+    assert "a customer asked for a human" not in body
+
+
 def test_from_address_falls_back_to_the_smtp_username(monkeypatch):
     monkeypatch.setattr(settings, "smtp_from_address", "")
     with patch("app.integrations.email.smtplib.SMTP") as mock_smtp_cls:
