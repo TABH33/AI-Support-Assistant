@@ -545,14 +545,14 @@ def post_chat(
     # creation, both ChatMessage rows, and the audit log entry below) is ONE
     # transaction, committed exactly once at the end. (Since escalation
     # became opt-in, this route no longer stages a SupportTicket/Notification
-    # at all -- see `handle_answer`.) Before this fix,
-    # session/ticket/notification/message persistence were each their own
-    # separate commit, so a failure between
-    # e.g. the ticket commit and this message commit could strand a
-    # SupportTicket pointing at a ChatSession with zero messages -- nothing
-    # for a support agent to act on. `db.flush()` still assigns
-    # `assistant_message.chat_message_id` (needed for the response and for
-    # `db.refresh()` below), it just doesn't make any of it durable yet.
+    # at all -- see `handle_answer`.) Before this fix, session/ticket/
+    # notification/message persistence were each their own separate commit,
+    # so a failure between e.g. the ticket commit and this message commit
+    # could strand a SupportTicket pointing at a ChatSession with zero
+    # messages -- nothing for a support agent to act on. `db.flush()` still
+    # assigns `assistant_message.chat_message_id` (needed for the response
+    # and for `db.refresh()` below), it just doesn't make any of it durable
+    # yet.
     db.flush()
     db.refresh(assistant_message)
     # Captured before `db.commit()` below expires the object's attributes --

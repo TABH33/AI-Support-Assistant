@@ -773,23 +773,25 @@ def test_two_consecutive_low_confidence_turns_each_offer_escalation_and_create_n
     assert db_session.query(SupportTicket).filter_by(chat_session_id=session_id).count() == 0
 
 
-def test_failure_after_ticket_and_notification_leaves_no_stranded_rows(client, db_session, fleet_a):
+def test_failure_before_commit_leaves_no_stranded_session_or_messages(client, db_session, fleet_a):
     """Final-review Fix 6 regression test: `POST /chat` used to perform
     several independent `db.commit()` calls in sequence (session creation,
-    ticket/notification creation, message persistence, audit logging). If
-    anything failed between the ticket/notification commit and the
-    message-persistence commit, a support agent would end up with a
-    SupportTicket pointing at a ChatSession with zero messages -- nothing to
-    act on.
+    message persistence, audit logging, ...), so a failure part-way through
+    could leave a durable ChatSession with missing or partial ChatMessage
+    rows.
 
-    The route now stages everything (session, ticket, notification, both
+    The route now stages everything (the possibly-new ChatSession, both
     ChatMessage rows, the AuditLog row) in ONE transaction and commits
-    exactly once at the very end. This simulates a failure AFTER the
-    escalation ticket/notification would have been flushed but BEFORE the
-    single final commit (patching `record_audit_event`, the very last write
-    before that commit, to raise) and proves the whole transaction rolls
-    back together -- no orphaned SupportTicket, no orphaned ChatSession, no
-    partial ChatMessage rows survive."""
+    exactly once at the very end. This simulates a failure AFTER the session
+    and both messages have been flushed but BEFORE that single commit
+    (patching `record_audit_event`, the very last write before the commit,
+    to raise) and proves the whole transaction rolls back together -- no
+    orphaned ChatSession and no partial ChatMessage rows survive.
+
+    Since escalation became opt-in, `POST /chat` never stages a
+    SupportTicket/Notification at all (only
+    `POST /chat/messages/{id}/escalate` or a thumbs-down creates one), so
+    this test is about session/message atomicity, not ticket atomicity."""
     with patch(
         "app.ai.chat_service.chat_completion",
         return_value="I think it might possibly be a battery issue?",
@@ -814,6 +816,9 @@ def test_failure_after_ticket_and_notification_leaves_no_stranded_rows(client, d
     db_session.rollback()
     db_session.expire_all()
 
+    # And no ticket is ever staged on this path in the first place (opt-in
+    # escalation) -- kept as a guard against silent auto-escalation creeping
+    # back into POST /chat.
     assert db_session.query(SupportTicket).count() == 0
     assert db_session.query(ChatSession).count() == 0
     assert db_session.query(ChatMessage).count() == 0
