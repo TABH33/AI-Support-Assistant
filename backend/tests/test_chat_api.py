@@ -1157,3 +1157,132 @@ def test_todays_routes_intent_reports_no_routes_when_none_planned(client, fleet_
     assert response.status_code == 200
     assert response.json()["answer"] == "No routes have been planned today."
     mock_chat.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# demo-routes-and-escalation: widened "today's routes" signal words
+# ("problem"/"problems"/"issue"/"issues"/"overview") plus false-positive
+# regression tests, mirroring the "reported"/"risk" collision fixes above.
+# ---------------------------------------------------------------------------
+
+from app.api.chat import _detect_todays_routes_intent  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "what routes were used today?",
+        "any active routes today?",
+        "are there any problems with my route?",
+        "any issues on my routes?",
+        "is there a problem with the route my driver is on",
+        "give me a route overview",
+        "Routes overview please",
+        "Any route issues?",
+    ],
+)
+def test_todays_routes_intent_fires_on_a_route_word_plus_a_signal_word(query):
+    assert _detect_todays_routes_intent(query) is True
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        # "problem"/"issue"/"overview" with no route word -- ordinary
+        # telematics/KB questions that must still reach RAG.
+        "my device has a battery problem",
+        "is there an issue with my tracker's signal strength?",
+        "give me an overview of my fleet's safety",
+        "what problems do harsh braking events cause?",
+        # Route-deviation questions are domain vocabulary
+        # (DrivingEventType.ROUTE_DEVIATION, the seeded "Route deviation
+        # alerts explained" KB article), not questions about planned routes.
+        # The first is the collision the original "risk" fix documented; the
+        # next two are the same collision reopened by "problem"/"issue", and
+        # the last shows the guard also covers the pre-existing "today" word.
+        "are route deviations a risk to my fleet?",
+        "I have a problem with route deviation alerts",
+        "are route deviations an issue for my fleet?",
+        "how many route deviations happened today?",
+        # A route word alone is not enough.
+        "what is a route?",
+    ],
+)
+def test_todays_routes_intent_does_not_fire_without_both_words_or_on_route_deviations(query):
+    assert _detect_todays_routes_intent(query) is False
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "are there any problems with my route?",
+        "give me a route overview",
+        "any issues on my routes?",
+    ],
+)
+def test_widened_route_questions_route_to_the_todays_routes_summary(client, fleet_a, query):
+    with (
+        patch(
+            "app.api.chat.summarize_todays_routes",
+            return_value="1 route(s) planned today (1 active, 0 completed).",
+        ) as mock_summary,
+        patch("app.ai.chat_service.chat_completion") as mock_chat,
+    ):
+        response = client.post(
+            "/chat",
+            json={"query": query, "device_id": fleet_a["device"].device_id},
+            headers=fleet_a["headers"],
+        )
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == "1 route(s) planned today (1 active, 0 completed)."
+    # Still scoped to the chat session's own customer -- never fleet-wide.
+    mock_summary.assert_called_once_with(ANY, customer_id=fleet_a["customer"].customer_id)
+    mock_chat.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "my device has a battery problem",
+        "is there an issue with my tracker's signal strength?",
+        "I have a problem with route deviation alerts",
+    ],
+)
+def test_problem_and_issue_questions_without_a_planned_route_meaning_fall_through_to_rag(
+    client, fleet_a, query
+):
+    with (
+        patch("app.api.chat.summarize_todays_routes") as mock_summary,
+        patch(
+            "app.ai.chat_service.chat_completion",
+            return_value='{"answer": "Checking that for you now.", "confidence": 0.8}',
+        ) as mock_chat,
+    ):
+        response = client.post(
+            "/chat",
+            json={"query": query, "device_id": fleet_a["device"].device_id},
+            headers=fleet_a["headers"],
+        )
+
+    assert response.status_code == 200
+    mock_summary.assert_not_called()
+    mock_chat.assert_called_once()
+
+
+def test_route_plan_intent_still_wins_over_a_widened_signal_word(client, fleet_a):
+    """"route to Z" is a request to plan a NEW route, checked before the
+    today's-routes intent -- the widened word "problems" must not steal it."""
+    with patch("app.api.chat.summarize_todays_routes") as mock_summary:
+        response = client.post(
+            "/chat",
+            json={
+                "query": "any problems on the route to Parramatta",
+                "device_id": fleet_a["device"].device_id,
+            },
+            headers=fleet_a["headers"],
+        )
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == "Which starting point should I plan this route from?"
+    mock_summary.assert_not_called()

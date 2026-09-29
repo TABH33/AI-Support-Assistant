@@ -305,27 +305,45 @@ def _detect_route_plan_intent(query: str) -> RoutePlanIntent | None:
 # "Today's routes" intent routing
 # ---------------------------------------------------------------------------
 
-# Requires BOTH a route-word and a temporal/status word, so an ordinary
-# telematics/KB question that happens to mention "route" doesn't get
-# swallowed here -- e.g. "are route deviations a risk to my fleet?" (which
-# should hit RAG/the seeded "Route deviation alerts explained" article, not
-# this intent) contains "route" but neither "today" nor "active". Bare
-# "risk"/"risks" are deliberately excluded from the signal words since this
-# app has real domain vocabulary built on "risk" (DrivingEventType.
-# ROUTE_DEVIATION, risk-related KB content) that would otherwise collide
-# with this intent. This also doesn't collide with _detect_route_plan_intent's
-# "plan a NEW route" phrasing, which is checked first (see post_chat below).
+# Requires BOTH a route-word and a signal word, so an ordinary
+# telematics/KB question that doesn't get swallowed here. Bare "risk"/"risks"
+# are deliberately excluded from the signal words since this app has real
+# domain vocabulary built on "risk" (DrivingEventType.ROUTE_DEVIATION,
+# risk-related KB content) that would otherwise collide with this intent.
+# This also doesn't collide with _detect_route_plan_intent's "plan a NEW
+# route" phrasing, which is checked first (see post_chat below).
+#
+# "problem(s)"/"issue(s)"/"overview" were added so "are there any problems
+# with my route?" and "give me a route overview" reach this intent (see
+# docs/superpowers/specs/2026-09-30-demo-routes-and-escalation-design.md).
+# Those words reopen exactly the collision the "risk" exclusion closed --
+# "are route deviations an issue for my fleet?" contains "route" + "issue" --
+# so any query mentioning "deviation" is excluded outright: a route
+# deviation is a driving-event concept with its own KB article (it should
+# reach RAG), never a question about already-planned routes.
 _TODAYS_ROUTES_ROUTE_WORDS = ("route", "routes")
-_TODAYS_ROUTES_TEMPORAL_STATUS_WORDS = ("today", "active")
+_TODAYS_ROUTES_TEMPORAL_STATUS_WORDS = (
+    "today",
+    "active",
+    "problem",
+    "problems",
+    "issue",
+    "issues",
+    "overview",
+)
+_TODAYS_ROUTES_EXCLUDED_WORDS = ("deviation",)
 
 
 def _detect_todays_routes_intent(query: str) -> bool:
     """True if the query is asking about already-planned routes (e.g.
-    "what routes were used today", "active routes", "route risks today")
-    rather than asking to plan a NEW route or ask an unrelated question
-    that happens to mention "route". Deliberately simple keyword matching,
-    same philosophy as _detect_report_intent/_detect_route_plan_intent."""
+    "what routes were used today", "active routes", "any problems with my
+    route?", "route overview") rather than asking to plan a NEW route or
+    ask an unrelated question that happens to mention "route". Deliberately
+    simple keyword matching, same philosophy as
+    _detect_report_intent/_detect_route_plan_intent."""
     lowered = query.lower()
+    if any(word in lowered for word in _TODAYS_ROUTES_EXCLUDED_WORDS):
+        return False
     has_route_word = any(word in lowered for word in _TODAYS_ROUTES_ROUTE_WORDS)
     has_signal_word = any(word in lowered for word in _TODAYS_ROUTES_TEMPORAL_STATUS_WORDS)
     return has_route_word and has_signal_word
