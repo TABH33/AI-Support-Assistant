@@ -287,16 +287,18 @@ export function ChatWidget() {
         feedback: value,
       })
       // Final-review Fix 7: a thumbs-down can create a support ticket
-      // (`ChatMessageFeedbackResponse.escalated`), same as the low-confidence
-      // auto-escalation path -- but that response was previously awaited and
-      // discarded, so nothing told the user a ticket had been created on
-      // their behalf. Setting `escalated` here reuses the EXACT same
-      // rendering this message already has for the auto-escalation case
-      // (the amber highlight + `chat-escalation-label` banner below), so the
-      // two escalation routes give consistent, not just similar, feedback
-      // for the same underlying outcome. `response.escalated` is always
-      // `false` for a thumbs-up (per the endpoint's own contract), so this
-      // is safe to apply unconditionally on success.
+      // (`ChatMessageFeedbackResponse.escalated`), same as the opt-in
+      // escalation-confirmation path (a customer's explicit "Yes" via
+      // POST /chat/messages/{id}/escalate) -- but that response was
+      // previously awaited and discarded, so nothing told the user a
+      // ticket had been created on their behalf. Setting `escalated` here
+      // reuses the EXACT same rendering this message already has for the
+      // opt-in escalation-confirmation case (the amber highlight +
+      // `chat-escalation-label` banner below), so the two escalation
+      // routes give consistent, not just similar, feedback for the same
+      // underlying outcome. `response.escalated` is always `false` for a
+      // thumbs-up (per the endpoint's own contract), so this is safe to
+      // apply unconditionally on success.
       if (response.escalated) {
         setMessages((prev) =>
           prev.map((message) => (message.id === messageId ? { ...message, escalated: true } : message))

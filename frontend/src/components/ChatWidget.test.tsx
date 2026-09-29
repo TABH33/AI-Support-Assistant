@@ -320,26 +320,30 @@ describe('ChatWidget', () => {
     expect(devicesCallsAfterSecond).toBe(devicesCallsAfterFirst)
   })
 
-  it('visually and textually distinguishes an escalated response from a normal answer', async () => {
-    mockChatFetch({ escalated: true })
+  it('shows a low-confidence answer with the fallback text and an escalation offer, not as already escalated', async () => {
+    // The backend contract is opt-in: a low-confidence answer from POST
+    // /chat returns `escalation_offered: true` and `escalated: false` --
+    // it never implicitly sets `escalated: true` itself (that only happens
+    // after the customer explicitly confirms via the Yes/No prompt, or via
+    // thumbs-down; see the 'opt-in escalation offer' describe block below).
+    mockChatFetch({ escalationOffered: true })
     renderWidget()
 
     await openWidget()
     await sendMessage('This is a complicated billing dispute')
 
     await waitFor(() => {
-      expect(screen.getByTestId('chat-escalation-label')).toBeInTheDocument()
+      expect(screen.getByTestId('chat-escalation-offer')).toBeInTheDocument()
     })
-
-    expect(screen.getByTestId('chat-escalation-label')).toHaveTextContent('Escalated to human support')
 
     const assistantMessage = screen.getByTestId('chat-message-assistant')
     expect(assistantMessage).toHaveTextContent(
       "I'm not confident enough to answer that -- a human agent will follow up."
     )
-    // Distinct styling from a normal assistant bubble (amber, not the plain gray bubble).
-    expect(assistantMessage.className).toContain('bg-amber-50')
-    expect(assistantMessage.className).not.toContain('bg-gray-100')
+    // Offered is not escalated: no amber "Escalated" label or styling yet.
+    expect(screen.queryByTestId('chat-escalation-label')).not.toBeInTheDocument()
+    expect(assistantMessage.className).not.toContain('bg-amber-50')
+    expect(assistantMessage.className).toContain('bg-gray-100')
   })
 
   it('does not show the escalation styling for a normal (non-escalated) response', async () => {
@@ -493,14 +497,15 @@ describe('ChatWidget', () => {
         expect(screen.getByText('Your vehicle traveled 42.5 km on its last trip.')).toBeInTheDocument()
       })
 
-      // Not shown yet -- this response was NOT auto-escalated (confidence
-      // 0.95, per mockChatFetch's non-escalated branch).
+      // Not shown yet -- this response wasn't escalated or offered
+      // escalation (confidence 0.95, per mockChatFetch's default
+      // non-escalated branch).
       expect(screen.queryByTestId('chat-escalation-label')).not.toBeInTheDocument()
 
       fireEvent.click(screen.getByRole('button', { name: /thumbs down/i }))
 
-      // The SAME visual acknowledgement the auto-escalation path uses now
-      // appears for the message the user just downvoted.
+      // The SAME visual acknowledgement the opt-in escalation-confirmation
+      // path uses now appears for the message the user just downvoted.
       await waitFor(() => {
         expect(screen.getByTestId('chat-escalation-label')).toBeInTheDocument()
       })

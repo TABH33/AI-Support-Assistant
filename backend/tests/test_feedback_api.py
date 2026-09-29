@@ -13,8 +13,8 @@ Idempotency of the thumbs-down escalation path (the brief's central
 correctness requirement) is proven with a real DB round-trip: press
 thumbs-down twice and assert exactly one `SupportTicket` row exists after
 both calls, not just after the first -- and separately, that a session
-which already has a ticket (e.g. from Task 14's low-confidence
-auto-escalation) is reused rather than duplicated.
+which already has a ticket (e.g. from an earlier opt-in escalation via
+`POST /chat/messages/{id}/escalate`) is reused rather than duplicated.
 """
 
 from __future__ import annotations
@@ -294,11 +294,12 @@ def test_repeated_thumbs_down_is_idempotent_no_duplicate_ticket(client, db_sessi
     assert len(tickets) == 1
 
 
-def test_thumbs_down_reuses_a_ticket_created_by_an_earlier_low_confidence_escalation(
+def test_thumbs_down_reuses_a_ticket_created_by_an_earlier_escalation(
     client, db_session, case_a
 ):
-    """A session may already have a `SupportTicket` from Task 14's
-    low-confidence auto-escalation before the customer ever presses
+    """A session may already have a `SupportTicket` from an earlier
+    escalation (e.g. the customer's opt-in "Yes" via
+    `POST /chat/messages/{id}/escalate`) before the customer ever presses
     thumbs-down. `ChatSession 1 -> 0..1 SupportTicket` (Task 4's UNIQUE
     constraint) means a second ticket can never legally exist for this
     session -- the feedback handler must find and reuse that ticket, not
