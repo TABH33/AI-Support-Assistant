@@ -61,21 +61,21 @@ describe('Layout', () => {
     expect(screen.queryByRole('link', { name: 'Routes' })).not.toBeInTheDocument()
   })
 
-  it('hides the Profile and Log out actions until the logo is clicked', () => {
+  it('hides the role label and Log out action until the logo is clicked', () => {
     loginAs('customer')
     renderLayout()
 
-    expect(screen.queryByRole('menuitem', { name: 'Profile' })).not.toBeInTheDocument()
+    expect(screen.queryByText('customer')).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Log out' })).not.toBeInTheDocument()
   })
 
-  it('opens a menu with Profile and Log out actions when the logo is clicked', () => {
+  it('opens a menu with the role and a Log out action when the logo is clicked', () => {
     loginAs('support_agent')
     renderLayout('/overview')
 
     fireEvent.click(screen.getByRole('button', { name: 'Ctrack' }))
 
-    expect(screen.getByRole('menuitem', { name: 'Profile' })).toHaveAttribute('href', '/profile')
+    expect(screen.getByText('support agent')).toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: 'Log out' })).toBeInTheDocument()
   })
 
@@ -87,5 +87,12 @@ describe('Layout', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Log out' }))
 
     expect(localStorage.getItem(TOKEN_STORAGE_KEY)).toBeNull()
+  })
+
+  it('always shows a separate Profile avatar link at the right, independent of the logo menu', () => {
+    loginAs('customer')
+    renderLayout()
+
+    expect(screen.getByRole('link', { name: 'Profile' })).toHaveAttribute('href', '/profile')
   })
 })

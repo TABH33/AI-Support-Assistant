@@ -42,7 +42,7 @@ export function Layout() {
     return onProfilePhotoChange(() => setPhoto(user ? getProfilePhoto(user) : null))
   }, [user])
 
-  // The profile menu closes on an outside click or Escape -- it does
+  // The role/log-out menu closes on an outside click or Escape -- it does
   // not live inside a <details>/<dialog>, so this listener is how it
   // behaves like a native dropdown.
   useEffect(() => {
@@ -77,27 +77,18 @@ export function Layout() {
               onClick={() => setIsMenuOpen((open) => !open)}
               aria-haspopup="menu"
               aria-expanded={isMenuOpen}
-              className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full focus:outline-none focus:ring-2 focus:ring-brand-teal"
+              className="flex items-center rounded focus:outline-none focus:ring-2 focus:ring-brand-teal"
             >
-              {photo ? (
-                <img src={photo} alt="Your profile" className="h-full w-full object-cover" />
-              ) : (
-                <img src={ctrackLogo} alt="Ctrack" className="h-8 w-auto" />
-              )}
+              <img src={ctrackLogo} alt="Ctrack" className="h-8 w-auto" />
             </button>
             {isMenuOpen && user && (
               <div
                 role="menu"
                 className="absolute left-0 top-full mt-2 w-48 rounded-lg bg-brand-darker-blue shadow-card py-2 z-10"
               >
-                <Link
-                  to="/profile"
-                  role="menuitem"
-                  onClick={() => setIsMenuOpen(false)}
-                  className="block px-4 py-1.5 text-sm font-medium text-white/80 hover:text-brand-teal"
-                >
-                  Profile
-                </Link>
+                <p className="px-4 py-1.5 text-xs font-medium text-white/50 capitalize">
+                  {user.role.replace('_', ' ')}
+                </p>
                 <button
                   type="button"
                   role="menuitem"
@@ -130,6 +121,29 @@ export function Layout() {
             ))}
           </div>
         </div>
+        <Link
+          to="/profile"
+          aria-label="Profile"
+          className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-full bg-brand-darker-blue text-white/80 hover:text-brand-teal focus:outline-none focus:ring-2 focus:ring-brand-teal"
+        >
+          {photo ? (
+            <img src={photo} alt="Your profile" className="h-full w-full object-cover" />
+          ) : (
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className="h-5 w-5"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="8" r="3" />
+              <path d="M5 21a7 7 0 0 1 14 0" />
+            </svg>
+          )}
+        </Link>
       </nav>
       <main className="p-6 font-body">
         <Outlet />
