@@ -52,6 +52,8 @@ from app.ai.route_planning import (
     RoutePlanResult,
     build_route_plan,
     save_route_plan,
+    summarize_active_drivers,
+    summarize_my_vehicle,
     summarize_route_plan,
     summarize_todays_routes,
 )
@@ -369,6 +371,76 @@ def _detect_todays_routes_intent(query: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# "My vehicle" intent routing
+# ---------------------------------------------------------------------------
+
+# "plate"/"registration" alone are unambiguous enough to trigger on their
+# own (a question about "my plate" or "registration number" is essentially
+# always asking for the caller's own vehicle, never a general KB topic).
+# "vehicle"/"car"/"driving" are NOT triggered alone -- "how do I maintain my
+# vehicle" or "my car insurance" would false-positive into this intent
+# otherwise -- so they additionally require an identity-question pattern
+# ("what's my...", "what am I...", "do I have..."), narrowing to the "what
+# do I have" questions this intent is actually for, not general vehicle
+# topics that merely happen to mention "my car"/"my vehicle".
+_MY_VEHICLE_IDENTITY_WORDS = ("plate", "registration")
+_MY_VEHICLE_SUBJECT_WORDS = ("vehicle", "car", "driving")
+_MY_VEHICLE_QUESTION_PATTERN = re.compile(
+    r"\bwhat(?:'s| is)?\s+(?:my|i)\b|\bdo i have\b|\bam i\b", re.IGNORECASE
+)
+
+
+def _detect_my_vehicle_intent(query: str) -> bool:
+    """True for "what am I driving", "what's my vehicle", "what car do I
+    have", "my plate", "registration number", etc. -- the caller asking
+    what vehicle they themselves are assigned to drive. Deliberately
+    simple keyword matching, same philosophy as
+    _detect_report_intent/_detect_todays_routes_intent."""
+    lowered = query.lower()
+    if any(word in lowered for word in _MY_VEHICLE_IDENTITY_WORDS):
+        return True
+    has_subject_word = any(word in lowered for word in _MY_VEHICLE_SUBJECT_WORDS)
+    has_question_pattern = bool(_MY_VEHICLE_QUESTION_PATTERN.search(lowered))
+    return has_subject_word and has_question_pattern
+
+
+# ---------------------------------------------------------------------------
+# "Active drivers" intent routing
+# ---------------------------------------------------------------------------
+
+# Same shape as _detect_todays_routes_intent above, keyed on "driver(s)"
+# instead of "route(s)" -- e.g. "which drivers are active today", "any
+# issues with my drivers" -- so a support agent asking specifically about
+# drivers (not using the word "route" at all) still reaches a deterministic
+# answer instead of falling through to RAG. "deviation" is excluded for the
+# same reason as that function: a route-deviation question belongs to RAG's
+# own KB content, not this intent.
+_ACTIVE_DRIVERS_DRIVER_WORDS = ("driver", "drivers")
+_ACTIVE_DRIVERS_SIGNAL_WORDS = (
+    "today",
+    "active",
+    "problem",
+    "problems",
+    "issue",
+    "issues",
+    "overview",
+    "status",
+)
+_ACTIVE_DRIVERS_EXCLUDED_WORDS = ("deviation",)
+
+
+def _detect_active_drivers_intent(query: str) -> bool:
+    """True for "which drivers are active today", "any issues with my
+    drivers", "driver status overview", etc."""
+    lowered = query.lower()
+    if any(word in lowered for word in _ACTIVE_DRIVERS_EXCLUDED_WORDS):
+        return False
+    has_driver_word = any(word in lowered for word in _ACTIVE_DRIVERS_DRIVER_WORDS)
+    has_signal_word = any(word in lowered for word in _ACTIVE_DRIVERS_SIGNAL_WORDS)
+    return has_driver_word and has_signal_word
+
+
+# ---------------------------------------------------------------------------
 # Report-intent routing
 # ---------------------------------------------------------------------------
 
@@ -431,12 +503,25 @@ def post_chat(
     customer_id = chat_session.customer_id
 
     route_plan_intent = _detect_route_plan_intent(payload.query)
+    my_vehicle_intent = (
+        _detect_my_vehicle_intent(payload.query) if route_plan_intent is None else False
+    )
+    active_drivers_intent = (
+        _detect_active_drivers_intent(payload.query)
+        if route_plan_intent is None and not my_vehicle_intent
+        else False
+    )
     todays_routes_intent = (
-        _detect_todays_routes_intent(payload.query) if route_plan_intent is None else False
+        _detect_todays_routes_intent(payload.query)
+        if route_plan_intent is None and not my_vehicle_intent and not active_drivers_intent
+        else False
     )
     report_intent = (
         _detect_report_intent(payload.query)
-        if route_plan_intent is None and not todays_routes_intent
+        if route_plan_intent is None
+        and not my_vehicle_intent
+        and not active_drivers_intent
+        and not todays_routes_intent
         else None
     )
     route_plan_payload: RoutePlanResult | None = None
@@ -479,6 +564,27 @@ def post_chat(
                     route_result, route_plan_intent.origin, route_plan_intent.destination
                 )
                 route_plan_payload = route_result
+        confidence = 1.0
+        escalated = False
+        escalation_offered = False
+        audit_action = ACTION_ROUTE_PLAN_GENERATED
+    elif my_vehicle_intent:
+        # Deterministic, same "always delivered" family as the other
+        # intents here -- current_user.driver_id is the JWT's own claim
+        # (see app/auth/dependencies.py), never client-supplied, so this
+        # can only ever answer about the CALLER's own vehicle.
+        answer_text = summarize_my_vehicle(
+            db, driver_id=current_user.driver_id, customer_id=customer_id
+        )
+        confidence = 1.0
+        escalated = False
+        escalation_offered = False
+        audit_action = ACTION_CHAT_ANSWER
+    elif active_drivers_intent:
+        # Same customer_id-scoping posture as todays_routes_intent below --
+        # see that branch's SECURITY FIX comment for why this never goes
+        # fleet-wide even for a support_agent caller.
+        answer_text = summarize_active_drivers(db, customer_id=customer_id)
         confidence = 1.0
         escalated = False
         escalation_offered = False

@@ -555,3 +555,121 @@ def summarize_todays_routes(db: Session, *, customer_id: int | None) -> str:
         lines.append(detail)
 
     return "\n".join(lines)
+
+
+def summarize_my_vehicle(db: Session, *, driver_id: int | None, customer_id: int) -> str:
+    """Deterministic (no LLM call) answer to the chat "my vehicle" intent
+    (app/api/chat.py's _detect_my_vehicle_intent): what vehicle (make,
+    model, plate) the caller is assigned to drive.
+
+    `driver_id` must be the JWT's own `driver_id` claim (CurrentUser.
+    driver_id -- see app/auth/dependencies.py), never a client-supplied
+    value, so this can only ever answer about the CALLER's own vehicle.
+    `None` means the caller is a support_agent, or a legacy fleet-level
+    customer login with no specific driver attached -- neither has one
+    vehicle of their own to report, so this returns a clear explanatory
+    message rather than guessing or listing the whole fleet.
+
+    `customer_id` re-scopes the driver lookup to the caller's own fleet
+    (defense in depth, same posture as `_scoped_drivers` in
+    app/api/telematics.py), even though `driver_id` already came from a
+    verified JWT claim rather than user input.
+    """
+    if driver_id is None:
+        return (
+            "Your account isn't linked to a specific driver profile, so "
+            "there's no single vehicle on file for you."
+        )
+
+    driver = (
+        db.query(Driver)
+        .filter(Driver.driver_id == driver_id, Driver.customer_id == customer_id)
+        .one_or_none()
+    )
+    if driver is None or driver.assigned_vehicle is None:
+        return "You don't have a vehicle assigned yet -- ask your fleet manager to assign one."
+
+    vehicle = driver.assigned_vehicle
+    return f"You're driving a {vehicle.make} {vehicle.model}, plate {vehicle.registration_number}."
+
+
+def summarize_active_drivers(
+    db: Session,
+    *,
+    customer_id: int,
+    data_source: TelematicsDataSource | None = None,
+) -> str:
+    """Deterministic (no LLM call) summary of which of customer_id's drivers
+    are actively on a route today, for the chat "active drivers" intent
+    (app/api/chat.py's _detect_active_drivers_intent). Always scoped to one
+    customer_id -- same security posture as summarize_todays_routes above
+    (see that function's docstring): an admin's chat answer is persisted
+    into ONE customer's own chat history, so this never goes fleet-wide
+    across every customer, even for a support_agent caller. A support_agent
+    who wants the true fleet-wide view already has one: GET /drivers and
+    GET /route-plans with no filter, which never write into a tenant-owned
+    chat record.
+
+    For each driver with an ACTIVE RoutePlan today, reports their name,
+    route, any route warnings, and how many driving events (speeding, harsh
+    braking, idling, route deviation) were recorded against their trips
+    today -- a richer "did anything happen" signal than route warnings
+    alone. A driver with no active route today is not "active" and is
+    omitted; this never lists the whole fleet roster, only who is out on a
+    route right now.
+    """
+    ds = data_source if data_source is not None else SyntheticDataSource(db)
+    today_start, tomorrow_start = site_day_bounds(site_today())
+
+    active_routes = (
+        db.query(RoutePlan)
+        .filter(
+            RoutePlan.customer_id == customer_id,
+            RoutePlan.created_at >= today_start,
+            RoutePlan.created_at < tomorrow_start,
+            RoutePlan.status == RoutePlanStatus.ACTIVE,
+            RoutePlan.driver_id.isnot(None),
+        )
+        .order_by(RoutePlan.created_at.desc())
+        .all()
+    )
+    if not active_routes:
+        return "No drivers are actively on a route today."
+
+    driver_ids = sorted({route.driver_id for route in active_routes})
+    drivers_by_id = {
+        driver.driver_id: driver
+        for driver in db.query(Driver).filter(Driver.driver_id.in_(driver_ids)).all()
+    }
+
+    todays_trips = ds.list_trips_for_customer(customer_id, since=today_start, until=tomorrow_start)
+    event_count_by_driver: dict[int, int] = {}
+    for trip in todays_trips:
+        if trip.driver_id not in driver_ids:
+            continue
+        events = ds.get_driving_events(trip.trip_id, customer_id=customer_id)
+        event_count_by_driver[trip.driver_id] = event_count_by_driver.get(trip.driver_id, 0) + len(
+            events
+        )
+
+    lines = [f"{len(active_routes)} driver(s) actively on a route today."]
+    for route in active_routes:
+        driver_label = route_plan_driver_label(route.driver_id, drivers_by_id)
+        detail = f"- {driver_label}: {route.origin_label} -> {route.destination_label}"
+        if route.unavailable:
+            detail += " (route data was unavailable when planned)"
+        elif route.warnings:
+            high_severity = sum(1 for warning in route.warnings if warning.get("severity") == "high")
+            detail += f", {len(route.warnings)} warning(s)"
+            if high_severity:
+                detail += f" ({high_severity} high-severity)"
+        else:
+            detail += ", no route warnings"
+
+        event_count = event_count_by_driver.get(route.driver_id, 0)
+        detail += (
+            f", {event_count} driving event(s) today" if event_count else ", no driving events today"
+        )
+        lines.append(detail)
+
+    return "\n".join(lines)

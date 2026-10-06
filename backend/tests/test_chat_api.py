@@ -1275,6 +1275,125 @@ def test_problem_and_issue_questions_without_a_planned_route_meaning_fall_throug
     mock_chat.assert_called_once()
 
 
+# ---------------------------------------------------------------------------
+# "My vehicle" and "active drivers" chat intents
+# ---------------------------------------------------------------------------
+
+from app.api.chat import _detect_active_drivers_intent, _detect_my_vehicle_intent  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "what am I driving?",
+        "what's my vehicle?",
+        "what car do I have?",
+        "what's my plate?",
+        "my license plate number",
+        "registration number please",
+        "what vehicle am I assigned?",
+    ],
+)
+def test_my_vehicle_intent_fires_on_identity_or_assignment_phrasing(query):
+    assert _detect_my_vehicle_intent(query) is True
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        # "vehicle"/"car" alone, with no driving/assignment word, is an
+        # ordinary KB-style question that must still reach RAG.
+        "how do I maintain my vehicle?",
+        "is my car insurance covered?",
+        "what's the best way to clean a car?",
+    ],
+)
+def test_my_vehicle_intent_does_not_fire_on_vehicle_word_alone(query):
+    assert _detect_my_vehicle_intent(query) is False
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "which drivers are active today?",
+        "any issues with my drivers?",
+        "driver status overview",
+        "are there any problems with my drivers today",
+    ],
+)
+def test_active_drivers_intent_fires_on_a_driver_word_plus_a_signal_word(query):
+    assert _detect_active_drivers_intent(query) is True
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        # A driver word alone, or a signal word alone, is not enough.
+        "who is my favorite driver",
+        "give me a fleet overview",
+        # Route-deviation questions stay RAG's domain, same exclusion as
+        # _detect_todays_routes_intent.
+        "did any drivers have route deviation issues today",
+    ],
+)
+def test_active_drivers_intent_does_not_fire_without_both_words_or_on_route_deviations(query):
+    assert _detect_active_drivers_intent(query) is False
+
+
+def test_my_vehicle_question_routes_to_the_vehicle_summary(client, fleet_a, db_session):
+    driver = fleet_a["driver"]
+    driver.assigned_vehicle_id = fleet_a["vehicle"].vehicle_id
+    db_session.commit()
+    driver_token = create_access_token(
+        subject=fleet_a["customer"].customer_id, role="customer", driver_id=driver.driver_id
+    )
+
+    with (
+        patch(
+            "app.api.chat.summarize_my_vehicle",
+            return_value="You're driving a MakeA ModelA, plate REG-A-001.",
+        ) as mock_summary,
+        patch("app.ai.chat_service.chat_completion") as mock_chat,
+    ):
+        response = client.post(
+            "/chat",
+            json={"query": "what am I driving?", "device_id": fleet_a["device"].device_id},
+            headers={"Authorization": f"Bearer {driver_token}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == "You're driving a MakeA ModelA, plate REG-A-001."
+    mock_summary.assert_called_once_with(
+        ANY, driver_id=driver.driver_id, customer_id=fleet_a["customer"].customer_id
+    )
+    mock_chat.assert_not_called()
+
+
+def test_active_drivers_question_routes_to_the_active_drivers_summary(client, fleet_a):
+    with (
+        patch(
+            "app.api.chat.summarize_active_drivers",
+            return_value="1 driver(s) actively on a route today.",
+        ) as mock_summary,
+        patch("app.ai.chat_service.chat_completion") as mock_chat,
+    ):
+        response = client.post(
+            "/chat",
+            json={
+                "query": "which drivers are active today?",
+                "device_id": fleet_a["device"].device_id,
+            },
+            headers=fleet_a["headers"],
+        )
+
+    assert response.status_code == 200
+    assert response.json()["answer"] == "1 driver(s) actively on a route today."
+    # Scoped to the chat session's own customer -- never fleet-wide, same
+    # posture as the "today's routes" intent.
+    mock_summary.assert_called_once_with(ANY, customer_id=fleet_a["customer"].customer_id)
+    mock_chat.assert_not_called()
+
+
 def test_route_plan_intent_still_wins_over_a_widened_signal_word(client, fleet_a):
     """"route to Z" is a request to plan a NEW route, checked before the
     today's-routes intent -- the widened word "problems" must not steal it."""
