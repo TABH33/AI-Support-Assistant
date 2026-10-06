@@ -41,7 +41,14 @@ def run() -> list[tuple[Driver, str]]:
 
         updated: list[tuple[Driver, str]] = []
         for index, driver in enumerate(drivers, start=1):
-            email = f"driver-{index:02d}@example.test"
+            # "driver-login-" (not generator.py's plain "driver-NN@..."):
+            # the live DB's driver rows don't actually line up with their
+            # generation-time index (ids 1/2 didn't hold "driver-01"/
+            # "driver-02"@example.test when this was first run against a
+            # real deployment) -- a distinct prefix sidesteps the
+            # uq_drivers_email collision entirely rather than depending on
+            # that alignment.
+            email = f"driver-login-{index:02d}@example.test"
             password = f"Driver{index}Pass123!"
             driver.email = email
             driver.password_hash = hash_password(password)
