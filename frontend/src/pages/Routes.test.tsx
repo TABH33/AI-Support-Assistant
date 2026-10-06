@@ -4,7 +4,6 @@ import { AuthProvider, TOKEN_STORAGE_KEY } from '../context/AuthProvider'
 import { makeFakeJwt } from '../test-support/jwt'
 import RoutesPage from './Routes'
 import type { RoutePlanListItem } from '../types/routePlan'
-import type { Driver } from '../types/telematics'
 
 vi.mock('../components/RouteMap', () => ({
   RouteMap: () => <div data-testid="mock-route-map" />,
@@ -22,17 +21,6 @@ function loginAsCustomer() {
   const token = makeFakeJwt({
     sub: '100',
     role: 'customer',
-    iat: Math.floor(Date.now() / 1000),
-    exp: Math.floor(Date.now() / 1000) + 3600,
-  })
-  localStorage.setItem(TOKEN_STORAGE_KEY, token)
-}
-
-function loginAsSupportAgent() {
-  const token = makeFakeJwt({
-    sub: '7',
-    role: 'support_agent',
-    access_level: 'admin',
     iat: Math.floor(Date.now() / 1000),
     exp: Math.floor(Date.now() / 1000) + 3600,
   })
@@ -73,27 +61,6 @@ const completedRoute: RoutePlanListItem = {
   completed_at: '2026-09-18T09:00:00Z',
 }
 
-const drivers: Driver[] = [
-  {
-    driver_id: 11,
-    customer_id: 100,
-    full_name: 'Alice Driver',
-    license_number: 'LIC-A',
-    email: null,
-    phone_number: null,
-    created_at: '2026-09-01T00:00:00Z',
-  },
-  {
-    driver_id: 22,
-    customer_id: 200,
-    full_name: 'Bob Driver',
-    license_number: 'LIC-B',
-    email: null,
-    phone_number: null,
-    created_at: '2026-09-01T00:00:00Z',
-  },
-]
-
 function mockRoutesFetch(routes: RoutePlanListItem[] = [activeRoute, completedRoute]) {
   ;(fetch as unknown as Mock).mockImplementation(async (url: string, options?: RequestInit) => {
     if (options?.method === 'PATCH' && url.includes('/complete')) {
@@ -112,9 +79,6 @@ function mockRoutesFetch(routes: RoutePlanListItem[] = [activeRoute, completedRo
           unavailable: false,
         }),
       }
-    }
-    if (url.includes('/drivers')) {
-      return { ok: true, status: 200, json: async () => drivers }
     }
     if (url.includes('/route-plans')) {
       return { ok: true, status: 200, json: async () => routes }
@@ -242,18 +206,7 @@ describe('RoutesPage', () => {
     expect(matchesAnyPossibleEta).toBe(true)
   })
 
-  it('shows a customer-ID filter only for a support_agent caller', async () => {
-    loginAsSupportAgent()
-    mockRoutesFetch([])
-
-    renderPage()
-
-    await waitFor(() => {
-      expect(screen.getByLabelText(/filter by customer id/i)).toBeInTheDocument()
-    })
-  })
-
-  it('does not show the customer-ID filter for a customer caller', async () => {
+  it('has no driver picker or support-agent-only fields -- a customer IS the driver', async () => {
     loginAsCustomer()
     mockRoutesFetch([])
 
@@ -262,59 +215,19 @@ describe('RoutesPage', () => {
     await waitFor(() => {
       expect(screen.getByText('No active routes today.')).toBeInTheDocument()
     })
+    expect(screen.queryByLabelText(/^driver$/i)).not.toBeInTheDocument()
     expect(screen.queryByLabelText(/filter by customer id/i)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText(/^customer id$/i)).not.toBeInTheDocument()
   })
 
-  it('lists the fleet drivers in the driver dropdown, defaulting to Unassigned', async () => {
+  it('sends only origin and destination in the POST /route-plan body', async () => {
     loginAsCustomer()
     mockRoutesFetch([])
 
     renderPage()
 
     await waitFor(() => {
-      expect(screen.getByRole('option', { name: 'Alice Driver' })).toBeInTheDocument()
-    })
-    const select = screen.getByLabelText(/^driver$/i) as HTMLSelectElement
-    expect(select.value).toBe('')
-    expect(screen.getByRole('option', { name: 'Unassigned' })).toBeInTheDocument()
-  })
-
-  it('sends the selected driver_id in the POST /route-plan body', async () => {
-    loginAsCustomer()
-    mockRoutesFetch([])
-
-    renderPage()
-
-    await waitFor(() => {
-      expect(screen.getByRole('option', { name: 'Alice Driver' })).toBeInTheDocument()
-    })
-
-    fireEvent.change(screen.getByLabelText(/origin/i), { target: { value: 'Sydney CBD' } })
-    fireEvent.change(screen.getByLabelText(/destination/i), { target: { value: 'Bondi Beach' } })
-    fireEvent.change(screen.getByLabelText(/^driver$/i), { target: { value: '11' } })
-    fireEvent.click(screen.getByRole('button', { name: /plan route/i }))
-
-    await waitFor(() => {
-      const postCall = (fetch as unknown as Mock).mock.calls.find(
-        ([url, options]) => options?.method === 'POST' && (url as string).includes('/route-plan')
-      )
-      expect(postCall).toBeTruthy()
-      expect(JSON.parse(postCall![1].body as string)).toMatchObject({
-        origin: 'Sydney CBD',
-        destination: 'Bondi Beach',
-        driver_id: 11,
-      })
-    })
-  })
-
-  it('omits driver_id from the POST body when no driver is selected', async () => {
-    loginAsCustomer()
-    mockRoutesFetch([])
-
-    renderPage()
-
-    await waitFor(() => {
-      expect(screen.getByRole('option', { name: 'Alice Driver' })).toBeInTheDocument()
+      expect(screen.getByText('No active routes today.')).toBeInTheDocument()
     })
 
     fireEvent.change(screen.getByLabelText(/origin/i), { target: { value: 'Sydney CBD' } })
@@ -326,57 +239,8 @@ describe('RoutesPage', () => {
         ([url, options]) => options?.method === 'POST' && (url as string).includes('/route-plan')
       )
       expect(postCall).toBeTruthy()
-      expect(JSON.parse(postCall![1].body as string)).not.toHaveProperty('driver_id')
-    })
-  })
-
-  it('narrows the driver dropdown to the customer ID a support agent typed', async () => {
-    loginAsSupportAgent()
-    mockRoutesFetch([])
-
-    renderPage()
-
-    await waitFor(() => {
-      expect(screen.getByRole('option', { name: 'Alice Driver' })).toBeInTheDocument()
-    })
-    expect(screen.getByRole('option', { name: 'Bob Driver' })).toBeInTheDocument()
-
-    fireEvent.change(screen.getByLabelText(/^customer id$/i), { target: { value: '200' } })
-
-    await waitFor(() => {
-      expect(screen.queryByRole('option', { name: 'Alice Driver' })).not.toBeInTheDocument()
-    })
-    expect(screen.getByRole('option', { name: 'Bob Driver' })).toBeInTheDocument()
-  })
-
-  it('resets the driver dropdown to Unassigned when the support agent changes the Customer ID', async () => {
-    loginAsSupportAgent()
-    mockRoutesFetch([])
-
-    renderPage()
-
-    await waitFor(() => {
-      expect(screen.getByRole('option', { name: 'Alice Driver' })).toBeInTheDocument()
-    })
-
-    const driverSelect = screen.getByLabelText(/^driver$/i) as HTMLSelectElement
-    fireEvent.change(driverSelect, { target: { value: '11' } })
-    expect(driverSelect.value).toBe('11')
-
-    fireEvent.change(screen.getByLabelText(/^customer id$/i), { target: { value: '200' } })
-
-    expect(driverSelect.value).toBe('')
-
-    fireEvent.change(screen.getByLabelText(/origin/i), { target: { value: 'Sydney CBD' } })
-    fireEvent.change(screen.getByLabelText(/destination/i), { target: { value: 'Bondi Beach' } })
-    fireEvent.click(screen.getByRole('button', { name: /plan route/i }))
-
-    await waitFor(() => {
-      const postCall = (fetch as unknown as Mock).mock.calls.find(
-        ([url, options]) => options?.method === 'POST' && (url as string).includes('/route-plan')
-      )
-      expect(postCall).toBeTruthy()
-      expect(JSON.parse(postCall![1].body as string)).not.toHaveProperty('driver_id')
+      const body = JSON.parse(postCall![1].body as string)
+      expect(body).toEqual({ origin: 'Sydney CBD', destination: 'Bondi Beach' })
     })
   })
 })

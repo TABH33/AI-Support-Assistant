@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { NavLink, Outlet } from 'react-router-dom'
+import { Link, NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../context/AuthProvider'
 import { ChatWidget } from './ChatWidget'
+import { getProfilePhoto, onProfilePhotoChange } from '../lib/avatar'
 import ctrackLogo from '../assets/ctrack-logo.png'
 
 /** Fleet-management tools (fleet-wide summary, driver roster) that stay
@@ -32,8 +33,16 @@ export function Layout() {
   const navLinks = user?.role === 'support_agent' ? SUPPORT_AGENT_NAV_LINKS : CUSTOMER_NAV_LINKS
   const [isMenuOpen, setIsMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+  const [photo, setPhoto] = useState<string | null>(() => (user ? getProfilePhoto(user) : null))
 
-  // The role/log-out menu closes on an outside click or Escape -- it does
+  // Keeps the avatar in sync with a photo change made on the Profile page,
+  // without a full reload -- see lib/avatar.ts's module docs.
+  useEffect(() => {
+    setPhoto(user ? getProfilePhoto(user) : null)
+    return onProfilePhotoChange(() => setPhoto(user ? getProfilePhoto(user) : null))
+  }, [user])
+
+  // The profile menu closes on an outside click or Escape -- it does
   // not live inside a <details>/<dialog>, so this listener is how it
   // behaves like a native dropdown.
   useEffect(() => {
@@ -68,18 +77,27 @@ export function Layout() {
               onClick={() => setIsMenuOpen((open) => !open)}
               aria-haspopup="menu"
               aria-expanded={isMenuOpen}
-              className="flex items-center rounded focus:outline-none focus:ring-2 focus:ring-brand-teal"
+              className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-full focus:outline-none focus:ring-2 focus:ring-brand-teal"
             >
-              <img src={ctrackLogo} alt="Ctrack" className="h-8 w-auto" />
+              {photo ? (
+                <img src={photo} alt="Your profile" className="h-full w-full object-cover" />
+              ) : (
+                <img src={ctrackLogo} alt="Ctrack" className="h-8 w-auto" />
+              )}
             </button>
             {isMenuOpen && user && (
               <div
                 role="menu"
                 className="absolute left-0 top-full mt-2 w-48 rounded-lg bg-brand-darker-blue shadow-card py-2 z-10"
               >
-                <p className="px-4 py-1.5 text-xs font-medium text-white/50 capitalize">
-                  {user.role.replace('_', ' ')}
-                </p>
+                <Link
+                  to="/profile"
+                  role="menuitem"
+                  onClick={() => setIsMenuOpen(false)}
+                  className="block px-4 py-1.5 text-sm font-medium text-white/80 hover:text-brand-teal"
+                >
+                  Profile
+                </Link>
                 <button
                   type="button"
                   role="menuitem"

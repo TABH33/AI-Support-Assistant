@@ -43,8 +43,17 @@ class Driver(Base):
     )
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     license_number: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
-    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # unique=True: a driver's own email doubles as their login identifier
+    # (see app/api/auth.py's login()) once a password_hash is set below.
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
     phone_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Nullable: most seeded drivers have no login of their own -- only the
+    # handful given real credentials via app/seed/seed_demo_driver_logins.py
+    # can authenticate directly (see app/api/auth.py's login()).
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    assigned_vehicle_id: Mapped[int | None] = mapped_column(
+        ForeignKey("vehicles.vehicle_id"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
@@ -52,6 +61,9 @@ class Driver(Base):
     customer: Mapped["Customer"] = relationship("Customer", back_populates="drivers")
     trips: Mapped[list["Trip"]] = relationship(
         "Trip", back_populates="driver", cascade="all, delete-orphan"
+    )
+    assigned_vehicle: Mapped["Vehicle | None"] = relationship(
+        "Vehicle", foreign_keys=[assigned_vehicle_id]
     )
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid only

@@ -31,6 +31,7 @@ from app.database import get_db
 from app.main import app
 from app.models import Base, Customer, SupportAgent
 from app.models.enums import AccessLevel, PreferredNotificationMethod
+from app.models.telematics import Driver, Vehicle
 
 # ---------------------------------------------------------------------------
 # Shared SQLite fixtures (mirrors backend/tests/test_models.py)
@@ -104,6 +105,54 @@ def seeded_agent(db_session):
     db_session.commit()
     db_session.refresh(agent)
     return agent
+
+
+@pytest.fixture()
+def seeded_vehicle(db_session, seeded_customer):
+    vehicle = Vehicle(
+        customer_id=seeded_customer.customer_id,
+        registration_number="AUTH-TEST-01",
+        make="Toyota",
+        model="HiAce",
+        year=2022,
+    )
+    db_session.add(vehicle)
+    db_session.commit()
+    db_session.refresh(vehicle)
+    return vehicle
+
+
+@pytest.fixture()
+def seeded_driver(db_session, seeded_customer, seeded_vehicle):
+    driver = Driver(
+        customer_id=seeded_customer.customer_id,
+        full_name="Auth Test Driver",
+        license_number="AUTH-TEST-LIC-01",
+        email="auth-driver@example.test",
+        phone_number="+61000000098",
+        password_hash=hash_password("driver-super-secret"),
+        assigned_vehicle_id=seeded_vehicle.vehicle_id,
+    )
+    db_session.add(driver)
+    db_session.commit()
+    db_session.refresh(driver)
+    return driver
+
+
+@pytest.fixture()
+def seeded_driver_without_login(db_session, seeded_customer):
+    """A driver with no password_hash -- the common case for seeded
+    drivers who were never given real login credentials."""
+    driver = Driver(
+        customer_id=seeded_customer.customer_id,
+        full_name="No Login Driver",
+        license_number="AUTH-TEST-LIC-02",
+        email="auth-driver-no-login@example.test",
+    )
+    db_session.add(driver)
+    db_session.commit()
+    db_session.refresh(driver)
+    return driver
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +300,135 @@ def test_login_response_never_echoes_password_hash(client, seeded_customer):
         json={"email": "auth-customer@example.test", "password": "correct-horse-battery-staple"},
     )
     assert seeded_customer.password_hash not in response.text
+
+
+def test_login_success_driver_is_scoped_to_their_fleet(client, seeded_driver, seeded_customer):
+    """A driver logging in directly still gets role="customer" with `sub`
+    equal to their *fleet's* customer_id -- not their own driver_id -- so
+    every existing customer-scoping check keeps working unchanged. The new
+    `driver_id` claim is the only thing that distinguishes it."""
+    response = client.post(
+        "/auth/login",
+        json={"email": "auth-driver@example.test", "password": "driver-super-secret"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["role"] == "customer"
+
+    payload = decode_access_token(body["access_token"])
+    assert payload["sub"] == str(seeded_customer.customer_id)
+    assert payload["role"] == "customer"
+    assert payload["driver_id"] == seeded_driver.driver_id
+
+
+def test_login_wrong_password_driver_is_rejected(client, seeded_driver):
+    response = client.post(
+        "/auth/login",
+        json={"email": "auth-driver@example.test", "password": "wrong-password"},
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Incorrect email or password"
+
+
+def test_login_rejects_driver_with_no_password_set(client, seeded_driver_without_login):
+    """A driver with no password_hash (the common case) can't log in at
+    all -- not even with an empty/arbitrary password -- and gets the same
+    generic error as an unknown email."""
+    response = client.post(
+        "/auth/login",
+        json={"email": "auth-driver-no-login@example.test", "password": "anything"},
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Incorrect email or password"
+
+
+# ---------------------------------------------------------------------------
+# GET /auth/me -- against the real app + temporary SQLite DB
+# ---------------------------------------------------------------------------
+
+
+def test_me_support_agent(client, seeded_agent):
+    login = client.post(
+        "/auth/login",
+        json={"email": "auth-agent@example.test", "password": "agent-super-secret"},
+    )
+    token = login.json()["access_token"]
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["role"] == "support_agent"
+    assert body["full_name"] == "Auth Test Agent"
+    assert body["company"] == "Ctrack"
+    assert body["email"] == "auth-agent@example.test"
+    assert body["vehicle"] is None
+
+
+def test_me_legacy_fleet_customer_login(client, seeded_customer):
+    login = client.post(
+        "/auth/login",
+        json={"email": "auth-customer@example.test", "password": "correct-horse-battery-staple"},
+    )
+    token = login.json()["access_token"]
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["role"] == "customer"
+    assert body["full_name"] == "Auth Test Customer"
+    assert body["company"] == "Auth Test Customer"
+    assert body["vehicle"] is None
+
+
+def test_me_driver_login_includes_company_and_assigned_vehicle(
+    client, seeded_driver, seeded_customer, seeded_vehicle
+):
+    login = client.post(
+        "/auth/login",
+        json={"email": "auth-driver@example.test", "password": "driver-super-secret"},
+    )
+    token = login.json()["access_token"]
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["role"] == "customer"
+    assert body["full_name"] == "Auth Test Driver"
+    assert body["company"] == seeded_customer.full_name
+    assert body["email"] == "auth-driver@example.test"
+    assert body["phone_number"] == "+61000000098"
+    assert body["vehicle"] == {
+        "registration_number": seeded_vehicle.registration_number,
+        "make": seeded_vehicle.make,
+        "model": seeded_vehicle.model,
+    }
+
+
+def test_me_driver_login_with_no_assigned_vehicle(client, db_session, seeded_customer):
+    driver = Driver(
+        customer_id=seeded_customer.customer_id,
+        full_name="Unassigned Vehicle Driver",
+        license_number="AUTH-TEST-LIC-03",
+        email="auth-driver-no-vehicle@example.test",
+        password_hash=hash_password("driver-super-secret"),
+    )
+    db_session.add(driver)
+    db_session.commit()
+
+    login = client.post(
+        "/auth/login",
+        json={"email": "auth-driver-no-vehicle@example.test", "password": "driver-super-secret"},
+    )
+    token = login.json()["access_token"]
+
+    response = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200
+    assert response.json()["vehicle"] is None
+
+
+def test_me_rejects_missing_token(client):
+    response = client.get("/auth/me")
+    assert response.status_code == 401
 
 
 # ---------------------------------------------------------------------------

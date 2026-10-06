@@ -11,6 +11,7 @@ import LiveTracking from './pages/LiveTracking'
 import Drivers from './pages/Drivers'
 import DriverDetail from './pages/DriverDetail'
 import Alerts from './pages/Alerts'
+import Profile from './pages/Profile'
 
 /** A customer's fleet-management-free default landing page is `/routes`;
  * a support_agent's is `/overview`, unchanged from before this page was
@@ -70,6 +71,7 @@ function App() {
                 }
               />
               <Route path="/alerts" element={<Alerts />} />
+              <Route path="/profile" element={<Profile />} />
               <Route path="*" element={<DefaultRoute />} />
             </Route>
           </Routes>

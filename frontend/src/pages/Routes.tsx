@@ -1,23 +1,15 @@
 /**
- * Route selector + daily route/risk tracking. Lets a customer (or, on
- * behalf of a customer, a support_agent) plan a route -- reusing the
- * route-planning feature's `POST /route-plan` and `RouteMap` -- and lists
- * everyone's routes planned today via `GET /route-plans`, with a "Mark
- * complete" action (`PATCH /route-plans/{id}/complete`). A support_agent
- * additionally sees every customer's routes and can filter by customer ID
- * -- see docs/superpowers/specs/2026-09-18-route-selector-and-daily-tracking-design.md.
- *
- * The plan form also carries an optional driver assignment, used by the
- * Live Tracking page (`/tracking`) to label a moving route with a driver
- * name -- see
- * docs/superpowers/specs/2026-09-24-live-tracking-design.md.
+ * Route selector + daily route/risk tracking, for a customer -- who IS the
+ * driver logging in (see RequireRole in App.tsx, which keeps this page
+ * customer-only, and the driver-login design in the brainstorming for this
+ * feature). Reuses the route-planning feature's `POST /route-plan` and
+ * `RouteMap`, and lists today's routes via `GET /route-plans`, with a
+ * "Mark complete" action (`PATCH /route-plans/{id}/complete`).
  */
 import { useEffect, useState, type FormEvent } from 'react'
 import { apiGet, apiPatch, apiPost } from '../lib/apiClient'
-import { useAuth } from '../context/AuthProvider'
 import { RouteMap } from '../components/RouteMap'
 import type { RoutePlanListItem, RoutePlanResult, RouteWarning } from '../types/routePlan'
-import type { Driver } from '../types/telematics'
 
 const STATUS_BADGE: Record<'active' | 'completed', string> = {
   active: 'bg-status-warning-surface text-status-warning-text dark:bg-status-warning-text/30 dark:text-status-warning-surface',
@@ -91,15 +83,8 @@ function RouteWarningsList({ warnings }: { warnings: RouteWarning[] }) {
 }
 
 export default function RoutesPage() {
-  const { user } = useAuth()
-  const isSupportAgent = user?.role === 'support_agent'
-
   const [origin, setOrigin] = useState('')
   const [destination, setDestination] = useState('')
-  const [planCustomerId, setPlanCustomerId] = useState('')
-  const [drivers, setDrivers] = useState<Driver[]>([])
-  const [driversError, setDriversError] = useState<string | null>(null)
-  const [driverId, setDriverId] = useState('')
   const [planResult, setPlanResult] = useState<RoutePlanResult | null>(null)
   const [planError, setPlanError] = useState<string | null>(null)
   const [isPlanning, setIsPlanning] = useState(false)
@@ -107,17 +92,12 @@ export default function RoutesPage() {
   const [routes, setRoutes] = useState<RoutePlanListItem[]>([])
   const [listError, setListError] = useState<string | null>(null)
   const [isLoadingList, setIsLoadingList] = useState(true)
-  const [filterCustomerId, setFilterCustomerId] = useState('')
 
   async function loadRoutes() {
     setIsLoadingList(true)
     setListError(null)
     try {
-      const query =
-        isSupportAgent && filterCustomerId
-          ? `?customer_id=${encodeURIComponent(filterCustomerId)}`
-          : ''
-      const data = await apiGet<RoutePlanListItem[]>(`/route-plans${query}`)
+      const data = await apiGet<RoutePlanListItem[]>('/route-plans')
       setRoutes(data)
     } catch (err) {
       setListError(err instanceof Error ? err.message : 'Failed to load routes.')
@@ -128,64 +108,15 @@ export default function RoutesPage() {
 
   useEffect(() => {
     void loadRoutes()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterCustomerId])
-
-  // `GET /drivers` is already customer-scoped server-side for a `customer`
-  // caller, and returns every customer's drivers for a `support_agent` --
-  // so the support-agent case is narrowed client-side to whichever
-  // customer they typed into the plan form's Customer ID field, matching
-  // how that field already scopes the saved plan itself.
-  useEffect(() => {
-    let cancelled = false
-
-    async function loadDrivers() {
-      try {
-        const data = await apiGet<Driver[]>('/drivers')
-        if (!cancelled) {
-          setDrivers(data)
-          setDriversError(null)
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setDrivers([])
-          setDriversError(err instanceof Error ? err.message : 'Failed to load drivers.')
-        }
-      }
-    }
-
-    void loadDrivers()
-
-    return () => {
-      cancelled = true
-    }
   }, [])
-
-  const selectableDrivers =
-    isSupportAgent && planCustomerId
-      ? drivers.filter((driver) => driver.customer_id === Number(planCustomerId))
-      : drivers
 
   async function handlePlanRoute(event: FormEvent) {
     event.preventDefault()
     setPlanError(null)
-
-    if (isSupportAgent && !planCustomerId) {
-      setPlanError('Customer ID is required for a support agent to save a route plan.')
-      return
-    }
-
     setIsPlanning(true)
     setPlanResult(null)
     try {
-      const body: Record<string, unknown> = { origin, destination }
-      if (isSupportAgent) {
-        body.customer_id = Number(planCustomerId)
-      }
-      if (driverId) {
-        body.driver_id = Number(driverId)
-      }
-      const result = await apiPost<RoutePlanResult>('/route-plan', body)
+      const result = await apiPost<RoutePlanResult>('/route-plan', { origin, destination })
       setPlanResult(result)
       await loadRoutes()
     } catch (err) {
@@ -225,10 +156,7 @@ export default function RoutesPage() {
           />
         </div>
         <div>
-          <label
-            htmlFor="route-destination"
-            className="block text-sm text-white/70"
-          >
+          <label htmlFor="route-destination" className="block text-sm text-white/70">
             Destination
           </label>
           <input
@@ -238,53 +166,6 @@ export default function RoutesPage() {
             required
             className="mt-1 rounded border border-line bg-white px-2 py-1 text-brand-dark dark:border-white/20 dark:bg-white/10 dark:text-white"
           />
-        </div>
-        {isSupportAgent && (
-          <div>
-            <label
-              htmlFor="route-plan-customer-id"
-              className="block text-sm text-white/70"
-            >
-              Customer ID
-            </label>
-            <input
-              id="route-plan-customer-id"
-              value={planCustomerId}
-              onChange={(event) => {
-                // Changing the customer invalidates any previously-selected
-                // driver -- `selectableDrivers` re-filters to the new
-                // customer's fleet, so a stale `driverId` for the old
-                // customer would otherwise be silently submitted and
-                // rejected by the backend's `_resolve_driver_id` check.
-                setPlanCustomerId(event.target.value)
-                setDriverId('')
-              }}
-              className="mt-1 w-24 rounded border border-line bg-white px-2 py-1 text-brand-dark dark:border-white/20 dark:bg-white/10 dark:text-white"
-            />
-          </div>
-        )}
-        <div>
-          <label htmlFor="route-driver" className="block text-sm text-white/70">
-            Driver
-          </label>
-          <select
-            id="route-driver"
-            value={driverId}
-            onChange={(event) => setDriverId(event.target.value)}
-            className="mt-1 rounded border border-line bg-white px-2 py-1 text-brand-dark dark:border-white/20 dark:bg-white/10 dark:text-white"
-          >
-            <option value="">Unassigned</option>
-            {selectableDrivers.map((driver) => (
-              <option key={driver.driver_id} value={driver.driver_id}>
-                {driver.full_name}
-              </option>
-            ))}
-          </select>
-          {driversError && (
-            <p className="mt-1 text-xs text-status-danger-text dark:text-status-danger-text">
-              Failed to load drivers: {driversError}
-            </p>
-          )}
         </div>
         <button
           type="submit"
@@ -319,24 +200,6 @@ export default function RoutesPage() {
               <RouteMap routePlan={planResult} />
             </>
           )}
-        </div>
-      )}
-
-      {isSupportAgent && (
-        <div className="mt-6">
-          <label
-            htmlFor="route-filter-customer-id"
-            className="block text-sm text-white/70"
-          >
-            Filter by customer ID
-          </label>
-          <input
-            id="route-filter-customer-id"
-            value={filterCustomerId}
-            onChange={(event) => setFilterCustomerId(event.target.value)}
-            placeholder="All customers"
-            className="mt-1 w-40 rounded border border-line bg-white px-2 py-1 text-brand-dark dark:border-white/20 dark:bg-white/10 dark:text-white"
-          />
         </div>
       )}
 

@@ -33,6 +33,11 @@ class CurrentUser:
     user_id: int
     role: str
     access_level: str | None = None
+    # Set only when a `customer`-role token was issued to a specific Driver
+    # logging in directly (see app/api/auth.py's login()) -- `user_id` is
+    # still that driver's customer_id either way, so this is purely extra
+    # context for GET /auth/me, never used for authorization.
+    driver_id: int | None = None
 
 
 def get_current_user(
@@ -61,7 +66,13 @@ def get_current_user(
     except (TypeError, ValueError):
         raise _UNAUTHENTICATED from None
 
-    return CurrentUser(user_id=user_id, role=role, access_level=payload.get("access_level"))
+    driver_id = payload.get("driver_id")
+    return CurrentUser(
+        user_id=user_id,
+        role=role,
+        access_level=payload.get("access_level"),
+        driver_id=int(driver_id) if driver_id is not None else None,
+    )
 
 
 def require_role(*roles: str):

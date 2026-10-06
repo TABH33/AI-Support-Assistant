@@ -40,6 +40,12 @@ export interface AuthUser {
   id: string
   role: UserRole
   accessLevel: string | null
+  // Set only when this `customer`-role session belongs to a specific
+  // Driver who logged in directly (see backend/app/api/auth.py's login())
+  // -- null for a legacy fleet-level customer login, and always null for
+  // support_agent. Used to key a driver's profile photo distinctly from
+  // another driver in the same fleet (see lib/avatar.ts).
+  driverId: number | null
 }
 
 interface LoginResponse {
@@ -53,6 +59,7 @@ interface JwtPayload {
   sub: string
   role: UserRole
   access_level?: string
+  driver_id?: number
   iat: number
   exp: number
 }
@@ -92,6 +99,7 @@ function userFromToken(token: string): AuthUser | null {
     id: payload.sub,
     role: payload.role,
     accessLevel: payload.access_level ?? null,
+    driverId: payload.driver_id ?? null,
   }
 }
 
@@ -136,6 +144,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       id: '',
       role: response.role,
       accessLevel: response.access_level ?? null,
+      driverId: null,
     }
 
     localStorage.setItem(TOKEN_STORAGE_KEY, response.access_token)

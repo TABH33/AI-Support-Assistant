@@ -28,6 +28,7 @@ class SupportAgent(Base):
     support_agent_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    phone_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
     access_level: Mapped[AccessLevel] = mapped_column(
         Enum(
             AccessLevel,

@@ -61,21 +61,21 @@ describe('Layout', () => {
     expect(screen.queryByRole('link', { name: 'Routes' })).not.toBeInTheDocument()
   })
 
-  it('hides the role label and Log out action until the logo is clicked', () => {
+  it('hides the Profile and Log out actions until the logo is clicked', () => {
     loginAs('customer')
     renderLayout()
 
-    expect(screen.queryByText('customer')).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: 'Profile' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: 'Log out' })).not.toBeInTheDocument()
   })
 
-  it('opens a menu with the role and a Log out action when the logo is clicked', () => {
+  it('opens a menu with Profile and Log out actions when the logo is clicked', () => {
     loginAs('support_agent')
     renderLayout('/overview')
 
     fireEvent.click(screen.getByRole('button', { name: 'Ctrack' }))
 
-    expect(screen.getByText('support agent')).toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: 'Profile' })).toHaveAttribute('href', '/profile')
     expect(screen.getByRole('menuitem', { name: 'Log out' })).toBeInTheDocument()
   })
 

@@ -55,10 +55,18 @@ def create_access_token(
     subject: int | str,
     role: Role,
     access_level: str | None = None,
+    driver_id: int | None = None,
     expires_minutes: int = DEFAULT_TOKEN_EXPIRE_MINUTES,
 ) -> str:
     """Issue a signed JWT carrying `sub` (user id), `role`, and -- for
-    support agents -- `access_level` claims.
+    support agents -- `access_level`, or -- for a driver logging in
+    directly -- `driver_id` claims.
+
+    `subject` for a driver login is still the driver's `customer_id` (not
+    their `driver_id`), so every existing customer-scoping check keyed on
+    the JWT `sub` (see app/api/telematics.py) keeps working unchanged;
+    `driver_id` is carried separately purely so `GET /auth/me` can tell
+    "this customer session is specifically this driver".
 
     `expires_minutes` may be negative (used by tests to mint an
     already-expired token).
@@ -72,6 +80,8 @@ def create_access_token(
     }
     if access_level is not None:
         payload["access_level"] = access_level
+    if driver_id is not None:
+        payload["driver_id"] = driver_id
     return jwt.encode(payload, settings.jwt_secret, algorithm=JWT_ALGORITHM)
 
 
