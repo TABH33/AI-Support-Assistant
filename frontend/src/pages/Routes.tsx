@@ -20,8 +20,8 @@ import type { RoutePlanListItem, RoutePlanResult, RouteWarning } from '../types/
 import type { Driver } from '../types/telematics'
 
 const STATUS_BADGE: Record<'active' | 'completed', string> = {
-  active: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300',
-  completed: 'bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300',
+  active: 'bg-status-warning-surface text-status-warning-text dark:bg-status-warning-text/30 dark:text-status-warning-surface',
+  completed: 'bg-status-success-surface text-status-success-text dark:bg-status-success-text/30 dark:text-status-success-surface',
 }
 
 /** Label + color-coded badge classes per warning severity, same
@@ -29,9 +29,9 @@ const STATUS_BADGE: Record<'active' | 'completed', string> = {
  * `severity` isn't a strict union on the backend, so anything not
  * recognized falls back to the neutral/gray style below. */
 const WARNING_SEVERITY_BADGE: Record<string, string> = {
-  high: 'bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300',
-  moderate: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300',
-  low: 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300',
+  high: 'bg-status-danger-surface text-status-danger-text dark:bg-status-danger-text/30 dark:text-status-danger-surface',
+  moderate: 'bg-status-warning-surface text-status-warning-text dark:bg-status-warning-text/30 dark:text-status-warning-surface',
+  low: 'bg-surface-page text-muted dark:bg-white/10 dark:text-white/70',
 }
 
 function warningBadgeClass(severity: string): string {
@@ -69,14 +69,14 @@ function formatEstimatedArrival(durationMin: number | null): string {
  * actually severe, not just how many there were. */
 function RouteWarningsList({ warnings }: { warnings: RouteWarning[] }) {
   if (warnings.length === 0) {
-    return <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">No warnings</p>
+    return <p className="mt-1 text-xs text-muted dark:text-white/60">No warnings</p>
   }
   return (
     <ul className="mt-1 space-y-1">
       {warnings.map((warning, index) => (
         <li
           key={`${warning.type}-${index}`}
-          className="flex items-start gap-2 text-xs text-gray-600 dark:text-gray-300"
+          className="flex items-start gap-2 text-xs text-muted dark:text-white/70"
         >
           <span
             className={`inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${warningBadgeClass(warning.severity)}`}
@@ -209,11 +209,11 @@ export default function RoutesPage() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Routes</h1>
+      <h1 className="font-heading text-2xl font-bold text-white">Routes</h1>
 
       <form onSubmit={handlePlanRoute} className="mt-4 flex flex-wrap items-end gap-3">
         <div>
-          <label htmlFor="route-origin" className="block text-sm text-gray-600 dark:text-gray-300">
+          <label htmlFor="route-origin" className="block text-sm text-white/70">
             Origin
           </label>
           <input
@@ -221,13 +221,13 @@ export default function RoutesPage() {
             value={origin}
             onChange={(event) => setOrigin(event.target.value)}
             required
-            className="mt-1 rounded border border-gray-300 px-2 py-1 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+            className="mt-1 rounded border border-line bg-white px-2 py-1 text-brand-dark dark:border-white/20 dark:bg-white/10 dark:text-white"
           />
         </div>
         <div>
           <label
             htmlFor="route-destination"
-            className="block text-sm text-gray-600 dark:text-gray-300"
+            className="block text-sm text-white/70"
           >
             Destination
           </label>
@@ -236,14 +236,14 @@ export default function RoutesPage() {
             value={destination}
             onChange={(event) => setDestination(event.target.value)}
             required
-            className="mt-1 rounded border border-gray-300 px-2 py-1 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+            className="mt-1 rounded border border-line bg-white px-2 py-1 text-brand-dark dark:border-white/20 dark:bg-white/10 dark:text-white"
           />
         </div>
         {isSupportAgent && (
           <div>
             <label
               htmlFor="route-plan-customer-id"
-              className="block text-sm text-gray-600 dark:text-gray-300"
+              className="block text-sm text-white/70"
             >
               Customer ID
             </label>
@@ -259,19 +259,19 @@ export default function RoutesPage() {
                 setPlanCustomerId(event.target.value)
                 setDriverId('')
               }}
-              className="mt-1 w-24 rounded border border-gray-300 px-2 py-1 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+              className="mt-1 w-24 rounded border border-line bg-white px-2 py-1 text-brand-dark dark:border-white/20 dark:bg-white/10 dark:text-white"
             />
           </div>
         )}
         <div>
-          <label htmlFor="route-driver" className="block text-sm text-gray-600 dark:text-gray-300">
+          <label htmlFor="route-driver" className="block text-sm text-white/70">
             Driver
           </label>
           <select
             id="route-driver"
             value={driverId}
             onChange={(event) => setDriverId(event.target.value)}
-            className="mt-1 rounded border border-gray-300 px-2 py-1 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+            className="mt-1 rounded border border-line bg-white px-2 py-1 text-brand-dark dark:border-white/20 dark:bg-white/10 dark:text-white"
           >
             <option value="">Unassigned</option>
             {selectableDrivers.map((driver) => (
@@ -281,7 +281,7 @@ export default function RoutesPage() {
             ))}
           </select>
           {driversError && (
-            <p className="mt-1 text-xs text-red-600 dark:text-red-400">
+            <p className="mt-1 text-xs text-status-danger-text dark:text-status-danger-text">
               Failed to load drivers: {driversError}
             </p>
           )}
@@ -289,14 +289,14 @@ export default function RoutesPage() {
         <button
           type="submit"
           disabled={isPlanning}
-          className="rounded bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+          className="rounded bg-brand-teal px-4 py-1.5 text-sm font-medium text-white hover:bg-brand-darker-teal disabled:opacity-50"
         >
           {isPlanning ? 'Planning…' : 'Plan route'}
         </button>
       </form>
 
       {planError && (
-        <p role="alert" className="mt-2 text-sm text-red-600 dark:text-red-400">
+        <p role="alert" className="mt-2 text-sm text-accent-pink dark:text-accent-pink">
           {planError}
         </p>
       )}
@@ -304,15 +304,15 @@ export default function RoutesPage() {
       {planResult && (
         <div className="mt-4">
           {planResult.unavailable ? (
-            <p className="text-sm text-yellow-700 dark:text-yellow-400">
+            <p className="text-sm text-accent-yellow dark:text-accent-yellow">
               {planResult.unavailable_message ?? 'Route data is currently unavailable.'}
             </p>
           ) : (
             <>
-              <p data-testid="plan-result-stats" className="mb-2 text-sm text-gray-700 dark:text-gray-300">
+              <p data-testid="plan-result-stats" className="mb-2 text-sm text-muted dark:text-white/70">
                 {formatDistanceDuration(planResult.distance_km, planResult.duration_min)}
                 {' · Estimated arrival '}
-                <span className="font-semibold text-gray-900 dark:text-white">
+                <span className="font-semibold text-brand-dark dark:text-white">
                   {formatEstimatedArrival(planResult.duration_min)}
                 </span>
               </p>
@@ -326,7 +326,7 @@ export default function RoutesPage() {
         <div className="mt-6">
           <label
             htmlFor="route-filter-customer-id"
-            className="block text-sm text-gray-600 dark:text-gray-300"
+            className="block text-sm text-white/70"
           >
             Filter by customer ID
           </label>
@@ -335,29 +335,29 @@ export default function RoutesPage() {
             value={filterCustomerId}
             onChange={(event) => setFilterCustomerId(event.target.value)}
             placeholder="All customers"
-            className="mt-1 w-40 rounded border border-gray-300 px-2 py-1 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+            className="mt-1 w-40 rounded border border-line bg-white px-2 py-1 text-brand-dark dark:border-white/20 dark:bg-white/10 dark:text-white"
           />
         </div>
       )}
 
-      <h2 className="mt-8 text-lg font-semibold text-gray-900 dark:text-white">
+      <h2 className="mt-8 font-heading text-lg font-semibold text-white">
         Today's routes
       </h2>
       {isLoadingList ? (
-        <p className="mt-2 text-gray-600 dark:text-gray-300">Loading routes…</p>
+        <p className="mt-2 text-white/70">Loading routes…</p>
       ) : listError ? (
-        <p role="alert" className="mt-2 text-sm text-red-600 dark:text-red-400">
+        <p role="alert" className="mt-2 text-sm text-accent-pink dark:text-accent-pink">
           Failed to load routes: {listError}
         </p>
       ) : (
         <>
-          <h3 className="mt-4 text-sm font-semibold uppercase text-gray-500 dark:text-gray-400">
+          <h3 className="mt-4 text-sm font-semibold uppercase text-white/70">
             Active ({active.length})
           </h3>
           {active.length === 0 ? (
-            <p className="mt-1 text-gray-600 dark:text-gray-300">No active routes today.</p>
+            <p className="mt-1 text-white/70">No active routes today.</p>
           ) : (
-            <ul className="mt-2 divide-y divide-gray-200 dark:divide-gray-700 overflow-hidden rounded-lg bg-white dark:bg-gray-800 shadow">
+            <ul className="mt-2 divide-y divide-line dark:divide-white/10 overflow-hidden rounded-lg bg-surface-card dark:bg-brand-darker-blue shadow-card">
               {active.map((route) => (
                 <li
                   key={route.route_plan_id}
@@ -365,7 +365,7 @@ export default function RoutesPage() {
                   className="px-4 py-3"
                 >
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-gray-900 dark:text-white">
+                    <span className="text-sm font-medium text-brand-dark dark:text-white">
                       {route.origin_label} → {route.destination_label}
                     </span>
                     <span
@@ -375,7 +375,7 @@ export default function RoutesPage() {
                       {route.status}
                     </span>
                   </div>
-                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  <p className="mt-1 text-xs text-muted dark:text-white/60">
                     {formatDistanceDuration(route.distance_km, route.duration_min)}
                     {' · '}
                     {formatTime(route.created_at)}
@@ -384,7 +384,7 @@ export default function RoutesPage() {
                   <button
                     type="button"
                     onClick={() => void handleMarkComplete(route.route_plan_id)}
-                    className="mt-2 rounded border border-gray-300 px-3 py-1 text-xs font-medium text-gray-700 dark:border-gray-600 dark:text-gray-200"
+                    className="mt-2 rounded border border-line px-3 py-1 text-xs font-medium text-muted dark:border-white/20 dark:text-white/80"
                   >
                     Mark complete
                   </button>
@@ -393,23 +393,23 @@ export default function RoutesPage() {
             </ul>
           )}
 
-          <h3 className="mt-6 text-sm font-semibold uppercase text-gray-500 dark:text-gray-400">
+          <h3 className="mt-6 text-sm font-semibold uppercase text-white/70">
             Completed ({completed.length})
           </h3>
           {completed.length === 0 ? (
-            <p className="mt-1 text-gray-600 dark:text-gray-300">No completed routes today.</p>
+            <p className="mt-1 text-white/70">No completed routes today.</p>
           ) : (
-            <ul className="mt-2 divide-y divide-gray-200 dark:divide-gray-700 overflow-hidden rounded-lg bg-white dark:bg-gray-800 shadow">
+            <ul className="mt-2 divide-y divide-line dark:divide-white/10 overflow-hidden rounded-lg bg-surface-card dark:bg-brand-darker-blue shadow-card">
               {completed.map((route) => (
                 <li
                   key={route.route_plan_id}
                   data-testid={`route-${route.route_plan_id}`}
                   className="px-4 py-3"
                 >
-                  <span className="text-sm font-medium text-gray-900 dark:text-white">
+                  <span className="text-sm font-medium text-brand-dark dark:text-white">
                     {route.origin_label} → {route.destination_label}
                   </span>
-                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  <p className="mt-1 text-xs text-muted dark:text-white/60">
                     {formatDistanceDuration(route.distance_km, route.duration_min)}
                     {' · completed '}
                     {formatTime(route.completed_at)}

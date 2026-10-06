@@ -101,13 +101,13 @@ describe('Alerts', () => {
 
     const openBadge = screen.getByTestId('ticket-status-900')
     expect(openBadge).toHaveTextContent('Open')
-    expect(openBadge.className).toContain('bg-red-100')
-    expect(openBadge.className).toContain('text-red-800')
+    expect(openBadge.className).toContain('bg-status-danger-surface')
+    expect(openBadge.className).toContain('text-status-danger-text')
 
     const resolvedBadge = screen.getByTestId('ticket-status-901')
     expect(resolvedBadge).toHaveTextContent('Resolved')
-    expect(resolvedBadge.className).toContain('bg-green-100')
-    expect(resolvedBadge.className).toContain('text-green-800')
+    expect(resolvedBadge.className).toContain('bg-status-success-surface')
+    expect(resolvedBadge.className).toContain('text-status-success-text')
 
     const rows = screen.getAllByRole('row')
     // rows[0] is the header row.

@@ -340,10 +340,10 @@ describe('ChatWidget', () => {
     expect(assistantMessage).toHaveTextContent(
       "I'm not confident enough to answer that -- a human agent will follow up."
     )
-    // Offered is not escalated: no amber "Escalated" label or styling yet.
+    // Offered is not escalated: no warning "Escalated" label or styling yet.
     expect(screen.queryByTestId('chat-escalation-label')).not.toBeInTheDocument()
-    expect(assistantMessage.className).not.toContain('bg-amber-50')
-    expect(assistantMessage.className).toContain('bg-gray-100')
+    expect(assistantMessage.className).not.toContain('bg-status-warning-surface')
+    expect(assistantMessage.className).toContain('bg-surface-page')
   })
 
   it('does not show the escalation styling for a normal (non-escalated) response', async () => {
@@ -359,8 +359,8 @@ describe('ChatWidget', () => {
 
     expect(screen.queryByTestId('chat-escalation-label')).not.toBeInTheDocument()
     const assistantMessage = screen.getByTestId('chat-message-assistant')
-    expect(assistantMessage.className).toContain('bg-gray-100')
-    expect(assistantMessage.className).not.toContain('bg-amber-50')
+    expect(assistantMessage.className).toContain('bg-surface-page')
+    expect(assistantMessage.className).not.toContain('bg-status-warning-surface')
   })
 
   describe('support_agent customer_id/device_id resolution', () => {

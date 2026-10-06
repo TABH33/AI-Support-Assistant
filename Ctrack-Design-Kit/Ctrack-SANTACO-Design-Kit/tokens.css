@@ -1,0 +1,34 @@
+:root {
+  --ctrack-dark-blue: #002b49;
+  --ctrack-teal: #40c1ac;
+  --ctrack-darker-blue: #06283f;
+  --ctrack-darker-teal: #33a08b;
+  --ctrack-purple: #882784;
+  --ctrack-pink: #cf3175;
+  --ctrack-yellow: #fcb534;
+  --ctrack-orange: #ee7759;
+
+  --surface-page: #f4f8f8;
+  --surface-card: #ffffff;
+  --text-primary: #002b49;
+  --text-secondary: #607787;
+  --border-subtle: #d7e3e7;
+
+  --source-ctrack-live: #33a08b;
+  --source-bolt-live: #882784;
+  --source-can-mock: #ee7759;
+  --source-combined-modelled: #002b49;
+
+  --state-success-text: #006e65;
+  --state-success-surface: #e9f8f5;
+  --state-warning-text: #916514;
+  --state-warning-surface: #fff2d6;
+  --state-danger-text: #9b4238;
+  --state-danger-surface: #fbe5e1;
+
+  --font-heading: "Red Hat Display", "Segoe UI", Arial, sans-serif;
+  --font-body: Poppins, "Segoe UI", Arial, sans-serif;
+  --shadow-card: 0 14px 40px rgba(0, 43, 73, 0.08);
+  --gradient-brand: linear-gradient(120deg, #002b49 12%, #063c54 62%, #168c89 150%);
+}
+

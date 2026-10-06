@@ -1,0 +1,43 @@
+{
+  "name": "Ctrack SANTACO Mobility Command",
+  "version": "1.0.0",
+  "colors": {
+    "brand": {
+      "darkBlue": { "hex": "#002B49", "usage": "Primary brand, navigation, headings and dark surfaces" },
+      "teal": { "hex": "#40C1AC", "usage": "Primary accent, actions, live states and highlights" },
+      "darkerBlue": { "hex": "#06283F", "usage": "Layered dark panels and chart contrast" },
+      "darkerTeal": { "hex": "#33A08B", "usage": "Secondary teal, Ctrack source markers" },
+      "purple": { "hex": "#882784", "usage": "Bolt data-source identification and chart series" }
+    },
+    "extended": {
+      "pink": { "hex": "#CF3175", "usage": "Chart differentiation only" },
+      "yellow": { "hex": "#FCB534", "usage": "Warnings, watch states and chart differentiation" },
+      "orange": { "hex": "#EE7759", "usage": "CAN/mock source identification and alert accents" }
+    },
+    "neutral": {
+      "paper": { "hex": "#F4F8F8", "usage": "Application background" },
+      "white": { "hex": "#FFFFFF", "usage": "Cards and text on dark surfaces" },
+      "muted": { "hex": "#607787", "usage": "Secondary text" },
+      "line": { "hex": "#D7E3E7", "usage": "Borders and separators" }
+    },
+    "functional": {
+      "successText": "#006E65",
+      "successSurface": "#E9F8F5",
+      "warningText": "#916514",
+      "warningSurface": "#FFF2D6",
+      "dangerText": "#9B4238",
+      "dangerSurface": "#FBE5E1"
+    },
+    "dataSources": {
+      "ctrackLive": "#33A08B",
+      "boltLive": "#882784",
+      "canMock": "#EE7759",
+      "combinedOrModelled": "#002B49"
+    }
+  },
+  "typography": {
+    "heading": "Red Hat Display, Segoe UI, Arial, sans-serif",
+    "body": "Poppins, Segoe UI, Arial, sans-serif"
+  }
+}
+

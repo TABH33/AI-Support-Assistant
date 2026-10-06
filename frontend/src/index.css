@@ -1,5 +1,42 @@
 @import "tailwindcss";
 
+/* Ctrack-Design-Kit colours and fonts, translated into Tailwind v4's
+ * CSS-first theme. IMPORTANT: Tailwind v4 does NOT read tailwind.config.js
+ * automatically (that was a v3 mechanism). The color, font and shadow
+ * custom properties declared below, inside the theme block, are what
+ * actually generate matching utility classes. A JS-config-only version of
+ * this file silently dropped every custom utility, which is why buttons
+ * styled with them rendered with no background at all -- just their
+ * (real, working) white text, i.e. invisible white on transparent. */
+@theme {
+  --color-brand-dark: #002b49;
+  --color-brand-teal: #40c1ac;
+  --color-brand-darker-blue: #06283f;
+  --color-brand-darker-teal: #33a08b;
+  --color-brand-purple: #882784;
+
+  --color-accent-pink: #cf3175;
+  --color-accent-yellow: #fcb534;
+  --color-accent-orange: #ee7759;
+
+  --color-surface-page: #f4f8f8;
+  --color-surface-card: #ffffff;
+  --color-line: #d7e3e7;
+  --color-muted: #607787;
+
+  --color-status-success-text: #006e65;
+  --color-status-success-surface: #e9f8f5;
+  --color-status-warning-text: #916514;
+  --color-status-warning-surface: #fff2d6;
+  --color-status-danger-text: #9b4238;
+  --color-status-danger-surface: #fbe5e1;
+
+  --font-heading: "Red Hat Display", "Segoe UI", Arial, sans-serif;
+  --font-body: Poppins, "Segoe UI", Arial, sans-serif;
+
+  --shadow-card: 0 14px 40px rgba(0, 43, 73, 0.08);
+}
+
 :root {
   --text: #6b6375;
   --text-h: #08060d;
@@ -13,8 +50,10 @@
   --shadow:
     rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
 
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
+  /* Ctrack-Design-Kit/.../colors.json "typography" -- Red Hat Display for
+     headings, Poppins for body, with system fallbacks. */
+  --sans: Poppins, 'Segoe UI', Arial, sans-serif;
+  --heading: 'Red Hat Display', 'Segoe UI', Arial, sans-serif;
   --mono: ui-monospace, Consolas, monospace;
 
   color-scheme: light dark;
@@ -42,4 +81,9 @@
 
 body {
   margin: 0;
+  font-family: var(--sans);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--heading);
 }

@@ -1,20 +1,24 @@
 import { useState, type FormEvent } from 'react'
 import { Navigate, useLocation } from 'react-router-dom'
 import { useAuth } from '../context/AuthProvider'
+import ctrackLogo from '../assets/ctrack-logo.png'
 
 interface LocationState {
   from?: { pathname?: string }
 }
 
 export default function Login() {
-  const { login, isAuthenticated } = useAuth()
+  const { login, isAuthenticated, user } = useAuth()
   const location = useLocation()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
-  const redirectTo = (location.state as LocationState | null)?.from?.pathname ?? '/overview'
+  // Overview is support_agent-only (see RequireRole in App.tsx); a customer's
+  // default landing page is Routes.
+  const defaultRedirect = user?.role === 'support_agent' ? '/overview' : '/routes'
+  const redirectTo = (location.state as LocationState | null)?.from?.pathname ?? defaultRedirect
 
   // Already logged in (e.g. navigated back to /login manually) -- bounce
   // straight to where they were headed instead of showing the form again.
@@ -38,24 +42,24 @@ export default function Login() {
   }
 
   return (
-    <main className="flex items-center justify-center min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
+    <main className="flex items-center justify-center min-h-screen bg-brand-dark">
       <form
         onSubmit={handleSubmit}
-        className="w-full max-w-sm bg-white dark:bg-gray-800 rounded-lg shadow p-8 space-y-4"
+        className="w-full max-w-sm bg-brand-darker-blue rounded-lg shadow-card p-8 space-y-4"
       >
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Sign in</h1>
+        <div className="flex flex-col items-center gap-3 mb-2">
+          <img src={ctrackLogo} alt="Ctrack" className="h-10 w-auto" />
+          <h1 className="font-heading text-2xl font-semibold text-white">Sign in</h1>
+        </div>
 
         {error && (
-          <p role="alert" className="text-sm text-red-600 dark:text-red-400">
+          <p role="alert" className="text-sm text-accent-pink bg-white/5 rounded px-3 py-2">
             {error}
           </p>
         )}
 
         <div>
-          <label
-            htmlFor="email"
-            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
-          >
+          <label htmlFor="email" className="block text-sm font-medium text-white/70">
             Email
           </label>
           <input
@@ -66,15 +70,12 @@ export default function Login() {
             autoComplete="email"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
-            className="mt-1 w-full rounded border border-gray-300 px-3 py-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+            className="mt-1 w-full rounded border border-white/20 bg-white/10 px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-brand-teal"
           />
         </div>
 
         <div>
-          <label
-            htmlFor="password"
-            className="block text-sm font-medium text-gray-700 dark:text-gray-300"
-          >
+          <label htmlFor="password" className="block text-sm font-medium text-white/70">
             Password
           </label>
           <input
@@ -85,14 +86,14 @@ export default function Login() {
             autoComplete="current-password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
-            className="mt-1 w-full rounded border border-gray-300 px-3 py-2 dark:bg-gray-700 dark:border-gray-600 dark:text-white"
+            className="mt-1 w-full rounded border border-white/20 bg-white/10 px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-brand-teal"
           />
         </div>
 
         <button
           type="submit"
           disabled={isSubmitting}
-          className="w-full px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-semibold rounded-lg transition duration-200"
+          className="w-full px-4 py-2 bg-brand-teal hover:bg-brand-darker-teal disabled:opacity-50 text-white font-semibold rounded-lg transition duration-200"
         >
           {isSubmitting ? 'Signing in…' : 'Sign in'}
         </button>

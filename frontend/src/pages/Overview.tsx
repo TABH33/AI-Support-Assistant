@@ -85,8 +85,8 @@ export default function Overview() {
   if (isLoading) {
     return (
       <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Overview</h1>
-        <p className="mt-2 text-gray-600 dark:text-gray-300">Loading fleet data…</p>
+        <h1 className="font-heading text-2xl font-bold text-white">Overview</h1>
+        <p className="mt-2 text-white/70">Loading fleet data…</p>
       </div>
     )
   }
@@ -94,8 +94,8 @@ export default function Overview() {
   if (error) {
     return (
       <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Overview</h1>
-        <p role="alert" className="mt-2 text-sm text-red-600 dark:text-red-400">
+        <h1 className="font-heading text-2xl font-bold text-white">Overview</h1>
+        <p role="alert" className="mt-2 text-sm text-accent-pink dark:text-accent-pink">
           Failed to load fleet data: {error}
         </p>
       </div>
@@ -125,64 +125,64 @@ export default function Overview() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Overview</h1>
+      <h1 className="font-heading text-2xl font-bold text-white">Overview</h1>
 
       <dl className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <div className="rounded-lg bg-white dark:bg-gray-800 shadow p-4">
-          <dt className="text-sm text-gray-500 dark:text-gray-400">Drivers</dt>
-          <dd className="text-2xl font-semibold text-gray-900 dark:text-white">
+        <div className="rounded-lg bg-surface-card dark:bg-brand-darker-blue shadow-card p-4">
+          <dt className="text-sm text-muted dark:text-white/60">Drivers</dt>
+          <dd className="text-2xl font-semibold text-brand-dark dark:text-white">
             {drivers.length}
           </dd>
         </div>
-        <div className="rounded-lg bg-white dark:bg-gray-800 shadow p-4">
-          <dt className="text-sm text-gray-500 dark:text-gray-400">Vehicles</dt>
-          <dd className="text-2xl font-semibold text-gray-900 dark:text-white">
+        <div className="rounded-lg bg-surface-card dark:bg-brand-darker-blue shadow-card p-4">
+          <dt className="text-sm text-muted dark:text-white/60">Vehicles</dt>
+          <dd className="text-2xl font-semibold text-brand-dark dark:text-white">
             {vehicles.length}
           </dd>
         </div>
-        <div className="rounded-lg bg-white dark:bg-gray-800 shadow p-4">
-          <dt className="text-sm text-gray-500 dark:text-gray-400">Trips</dt>
-          <dd className="text-2xl font-semibold text-gray-900 dark:text-white">
+        <div className="rounded-lg bg-surface-card dark:bg-brand-darker-blue shadow-card p-4">
+          <dt className="text-sm text-muted dark:text-white/60">Trips</dt>
+          <dd className="text-2xl font-semibold text-brand-dark dark:text-white">
             {trips.length}
-            <span className="ml-2 text-sm font-normal text-gray-500 dark:text-gray-400">
+            <span className="ml-2 text-sm font-normal text-muted dark:text-white/60">
               ({activeTrips} active)
             </span>
           </dd>
         </div>
-        <div className="rounded-lg bg-white dark:bg-gray-800 shadow p-4">
-          <dt className="text-sm text-gray-500 dark:text-gray-400">Total distance</dt>
-          <dd className="text-2xl font-semibold text-gray-900 dark:text-white">
+        <div className="rounded-lg bg-surface-card dark:bg-brand-darker-blue shadow-card p-4">
+          <dt className="text-sm text-muted dark:text-white/60">Total distance</dt>
+          <dd className="text-2xl font-semibold text-brand-dark dark:text-white">
             {totalDistanceKm.toFixed(1)} km
           </dd>
         </div>
       </dl>
 
-      <h2 className="mt-8 text-lg font-semibold text-gray-900 dark:text-white">Routes</h2>
+      <h2 className="mt-8 font-heading text-lg font-semibold text-white">Routes</h2>
       {trips.length === 0 ? (
-        <p className="mt-2 text-gray-600 dark:text-gray-300">No trips recorded yet.</p>
+        <p className="mt-2 text-white/70">No trips recorded yet.</p>
       ) : (
-        <div className="mt-2 overflow-x-auto rounded-lg bg-white dark:bg-gray-800 shadow">
-          <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+        <div className="mt-2 overflow-x-auto rounded-lg bg-surface-card dark:bg-brand-darker-blue shadow-card">
+          <table className="min-w-full divide-y divide-line dark:divide-white/10">
             <thead>
               <tr>
-                <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
+                <th className="px-4 py-2 text-left text-xs font-medium uppercase text-muted dark:text-white/60">
                   Driver
                 </th>
-                <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
+                <th className="px-4 py-2 text-left text-xs font-medium uppercase text-muted dark:text-white/60">
                   Vehicle
                 </th>
-                <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
+                <th className="px-4 py-2 text-left text-xs font-medium uppercase text-muted dark:text-white/60">
                   Start
                 </th>
-                <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
+                <th className="px-4 py-2 text-left text-xs font-medium uppercase text-muted dark:text-white/60">
                   End
                 </th>
-                <th className="px-4 py-2 text-left text-xs font-medium uppercase text-gray-500 dark:text-gray-400">
+                <th className="px-4 py-2 text-left text-xs font-medium uppercase text-muted dark:text-white/60">
                   Distance
                 </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-200 dark:divide-gray-700">
+            <tbody className="divide-y divide-line dark:divide-white/10">
               {trips.map((trip) => (
                 <tr
                   key={trip.trip_id}
@@ -197,23 +197,23 @@ export default function Overview() {
                   aria-selected={trip.trip_id === selectedTripId}
                   className={`cursor-pointer ${
                     trip.trip_id === selectedTripId
-                      ? 'bg-blue-50 dark:bg-blue-900/30'
-                      : 'hover:bg-gray-50 dark:hover:bg-gray-700'
+                      ? 'bg-brand-teal/10 dark:bg-brand-teal/20'
+                      : 'hover:bg-surface-page dark:hover:bg-white/10'
                   }`}
                 >
-                  <td className="px-4 py-2 text-sm text-gray-900 dark:text-white">
+                  <td className="px-4 py-2 text-sm text-brand-dark dark:text-white">
                     {driverNameById.get(trip.driver_id) ?? `Driver #${trip.driver_id}`}
                   </td>
-                  <td className="px-4 py-2 text-sm text-gray-900 dark:text-white">
+                  <td className="px-4 py-2 text-sm text-brand-dark dark:text-white">
                     {vehicleLabelById.get(trip.vehicle_id) ?? `Vehicle #${trip.vehicle_id}`}
                   </td>
-                  <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-300">
+                  <td className="px-4 py-2 text-sm text-muted dark:text-white/70">
                     {formatDateTime(trip.start_time)}
                   </td>
-                  <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-300">
+                  <td className="px-4 py-2 text-sm text-muted dark:text-white/70">
                     {formatDateTime(trip.end_time)}
                   </td>
-                  <td className="px-4 py-2 text-sm text-gray-600 dark:text-gray-300">
+                  <td className="px-4 py-2 text-sm text-muted dark:text-white/70">
                     {formatDistance(trip.distance_km)}
                   </td>
                 </tr>

@@ -1,0 +1,24 @@
+{
+  "format": "SVG",
+  "defaultSize": 24,
+  "strokeWidth": 2,
+  "icons": [
+    { "name": "info", "file": "icons/info.svg", "purpose": "Metric explanations and provenance tooltips" },
+    { "name": "vehicle-ev", "file": "icons/vehicle-ev.svg", "purpose": "Electric assets" },
+    { "name": "map-pin", "file": "icons/map-pin.svg", "purpose": "Live location" },
+    { "name": "charging", "file": "icons/charging.svg", "purpose": "Charging infrastructure" },
+    { "name": "driver", "file": "icons/driver.svg", "purpose": "People and driver profiles" },
+    { "name": "shield-safety", "file": "icons/shield-safety.svg", "purpose": "Safety and compliance" },
+    { "name": "route", "file": "icons/route.svg", "purpose": "Routes and optimisation" },
+    { "name": "hard-braking", "file": "icons/hard-braking.svg", "purpose": "Harsh braking events" },
+    { "name": "acceleration", "file": "icons/acceleration.svg", "purpose": "Harsh acceleration events" },
+    { "name": "seatbelt", "file": "icons/seatbelt.svg", "purpose": "Seatbelt compliance" },
+    { "name": "data-live", "file": "icons/data-live.svg", "purpose": "Live connection status" },
+    { "name": "energy", "file": "icons/energy.svg", "purpose": "Energy and battery" },
+    { "name": "source-ctrack", "file": "icons/source-ctrack.svg", "purpose": "Ctrack live provenance" },
+    { "name": "source-bolt", "file": "icons/source-bolt.svg", "purpose": "Bolt live provenance" },
+    { "name": "source-can", "file": "icons/source-can.svg", "purpose": "CAN mock provenance" },
+    { "name": "source-model", "file": "icons/source-model.svg", "purpose": "Combined or modelled provenance" }
+  ]
+}
+

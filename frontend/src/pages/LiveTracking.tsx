@@ -80,8 +80,8 @@ export default function LiveTracking() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Live Tracking</h1>
-      <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+      <h1 className="font-heading text-2xl font-bold text-white">Live Tracking</h1>
+      <p className="mt-1 text-sm text-muted dark:text-white/60">
         Simulated positions, refreshed every {POLL_INTERVAL_MS / 1000} seconds.
       </p>
 
@@ -89,7 +89,7 @@ export default function LiveTracking() {
         <div className="mt-4">
           <label
             htmlFor="live-filter-customer-id"
-            className="block text-sm text-gray-600 dark:text-gray-300"
+            className="block text-sm text-white/70"
           >
             Filter by customer ID
           </label>
@@ -98,19 +98,19 @@ export default function LiveTracking() {
             value={filterCustomerId}
             onChange={(event) => setFilterCustomerId(event.target.value)}
             placeholder="All customers"
-            className="mt-1 w-40 rounded border border-gray-300 px-2 py-1 dark:border-gray-600 dark:bg-gray-700 dark:text-white"
+            className="mt-1 w-40 rounded border border-line bg-white px-2 py-1 text-brand-dark dark:border-white/20 dark:bg-white/10 dark:text-white"
           />
         </div>
       )}
 
       {error && (
-        <p role="alert" className="mt-2 text-sm text-red-600 dark:text-red-400">
+        <p role="alert" className="mt-2 text-sm text-accent-pink dark:text-accent-pink">
           Failed to load live routes: {error}
         </p>
       )}
 
       {isLoading ? (
-        <p className="mt-4 text-gray-600 dark:text-gray-300">Loading live routes…</p>
+        <p className="mt-4 text-white/70">Loading live routes…</p>
       ) : (
         <div className="mt-4 grid gap-4 lg:grid-cols-3">
           <div className="lg:col-span-2">
@@ -118,25 +118,25 @@ export default function LiveTracking() {
           </div>
 
           <div>
-            <h2 className="text-sm font-semibold uppercase text-gray-500 dark:text-gray-400">
+            <h2 className="text-sm font-semibold uppercase text-white/70">
               Tracking {routes.length} route(s)
             </h2>
             {routes.length === 0 ? (
-              <p className="mt-2 text-gray-600 dark:text-gray-300">
+              <p className="mt-2 text-white/70">
                 No routes are being tracked right now.
               </p>
             ) : (
-              <ul className="mt-2 divide-y divide-gray-200 dark:divide-gray-700 overflow-hidden rounded-lg bg-white dark:bg-gray-800 shadow">
+              <ul className="mt-2 divide-y divide-line dark:divide-white/10 overflow-hidden rounded-lg bg-surface-card dark:bg-brand-darker-blue shadow-card">
                 {routes.map((route) => (
                   <li
                     key={route.route_plan_id}
                     data-testid={`live-route-${route.route_plan_id}`}
                     className="px-4 py-3"
                   >
-                    <span className="text-sm font-medium text-gray-900 dark:text-white">
+                    <span className="text-sm font-medium text-brand-dark dark:text-white">
                       {route.driver_name ?? 'Unassigned'}
                     </span>
-                    <p className="text-xs text-gray-600 dark:text-gray-300">
+                    <p className="text-xs text-muted dark:text-white/70">
                       {route.origin_label} → {route.destination_label}
                     </p>
                     <div
@@ -146,14 +146,14 @@ export default function LiveTracking() {
                       aria-valuemax={100}
                       aria-valuenow={Math.round(route.progress_percent)}
                       aria-label={`${route.origin_label} to ${route.destination_label} progress`}
-                      className="mt-2 h-2 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700"
+                      className="mt-2 h-2 w-full overflow-hidden rounded-full bg-surface-page dark:bg-white/10"
                     >
                       <div
-                        className="h-full rounded-full bg-indigo-600"
+                        className="h-full rounded-full bg-brand-teal"
                         style={{ width: `${Math.round(route.progress_percent)}%` }}
                       />
                     </div>
-                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    <p className="mt-1 text-xs text-muted dark:text-white/60">
                       {Math.round(route.progress_percent)}% · ETA {formatEta(route.eta)}
                     </p>
                   </li>

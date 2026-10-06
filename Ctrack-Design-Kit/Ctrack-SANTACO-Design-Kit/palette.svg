@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720" role="img" aria-label="Ctrack SANTACO colour palette">
+  <rect width="1200" height="720" fill="#F4F8F8"/>
+  <text x="64" y="76" fill="#002B49" font-family="Arial, sans-serif" font-size="34" font-weight="700">Ctrack / SANTACO colour palette</text>
+  <text x="64" y="112" fill="#607787" font-family="Arial, sans-serif" font-size="16">Core colours dominate. Extended colours support charts, states and provenance.</text>
+  <g font-family="Arial, sans-serif">
+    <g transform="translate(64 160)"><rect width="330" height="150" rx="8" fill="#002B49"/><text x="24" y="104" fill="#fff" font-size="22" font-weight="700">Dark Blue</text><text x="24" y="132" fill="#8AD9CE" font-size="16">#002B49</text></g>
+    <g transform="translate(418 160)"><rect width="330" height="150" rx="8" fill="#40C1AC"/><text x="24" y="104" fill="#002B49" font-size="22" font-weight="700">Teal</text><text x="24" y="132" fill="#002B49" font-size="16">#40C1AC</text></g>
+    <g transform="translate(772 160)"><rect width="330" height="150" rx="8" fill="#06283F"/><text x="24" y="104" fill="#fff" font-size="22" font-weight="700">Darker Blue</text><text x="24" y="132" fill="#8AD9CE" font-size="16">#06283F</text></g>
+    <g transform="translate(64 334)"><rect width="241" height="128" rx="8" fill="#33A08B"/><text x="18" y="86" fill="#fff" font-size="18" font-weight="700">Darker Teal</text><text x="18" y="110" fill="#fff" font-size="14">#33A08B</text></g>
+    <g transform="translate(329 334)"><rect width="241" height="128" rx="8" fill="#882784"/><text x="18" y="86" fill="#fff" font-size="18" font-weight="700">Purple</text><text x="18" y="110" fill="#fff" font-size="14">#882784</text></g>
+    <g transform="translate(594 334)"><rect width="241" height="128" rx="8" fill="#CF3175"/><text x="18" y="86" fill="#fff" font-size="18" font-weight="700">Pink</text><text x="18" y="110" fill="#fff" font-size="14">#CF3175</text></g>
+    <g transform="translate(859 334)"><rect width="241" height="128" rx="8" fill="#FCB534"/><text x="18" y="86" fill="#002B49" font-size="18" font-weight="700">Yellow</text><text x="18" y="110" fill="#002B49" font-size="14">#FCB534</text></g>
+    <g transform="translate(64 486)"><rect width="241" height="128" rx="8" fill="#EE7759"/><text x="18" y="86" fill="#fff" font-size="18" font-weight="700">Orange</text><text x="18" y="110" fill="#fff" font-size="14">#EE7759</text></g>
+    <g transform="translate(329 486)"><rect width="241" height="128" rx="8" fill="#FFFFFF" stroke="#D7E3E7"/><text x="18" y="86" fill="#002B49" font-size="18" font-weight="700">White</text><text x="18" y="110" fill="#607787" font-size="14">#FFFFFF</text></g>
+    <g transform="translate(594 486)"><rect width="241" height="128" rx="8" fill="#607787"/><text x="18" y="86" fill="#fff" font-size="18" font-weight="700">Muted</text><text x="18" y="110" fill="#fff" font-size="14">#607787</text></g>
+    <g transform="translate(859 486)"><rect width="241" height="128" rx="8" fill="#D7E3E7"/><text x="18" y="86" fill="#002B49" font-size="18" font-weight="700">Line</text><text x="18" y="110" fill="#607787" font-size="14">#D7E3E7</text></g>
+  </g>
+</svg>
+

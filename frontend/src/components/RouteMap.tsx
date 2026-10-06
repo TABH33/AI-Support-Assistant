@@ -31,7 +31,7 @@ export function RouteMap({ routePlan }: RouteMapProps) {
   return (
     <div
       data-testid="route-map"
-      className="h-64 w-full overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700"
+      className="h-64 w-full overflow-hidden rounded-lg border border-line dark:border-white/10"
     >
       <MapContainer center={center} zoom={11} style={{ height: '100%', width: '100%' }} scrollWheelZoom={false}>
         <TileLayer

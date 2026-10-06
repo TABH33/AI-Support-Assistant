@@ -46,8 +46,8 @@ export default function Drivers() {
   if (isLoadingDrivers) {
     return (
       <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Drivers</h1>
-        <p className="mt-2 text-gray-600 dark:text-gray-300">Loading drivers…</p>
+        <h1 className="font-heading text-2xl font-bold text-white">Drivers</h1>
+        <p className="mt-2 text-white/70">Loading drivers…</p>
       </div>
     )
   }
@@ -55,8 +55,8 @@ export default function Drivers() {
   if (driversError) {
     return (
       <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Drivers</h1>
-        <p role="alert" className="mt-2 text-sm text-red-600 dark:text-red-400">
+        <h1 className="font-heading text-2xl font-bold text-white">Drivers</h1>
+        <p role="alert" className="mt-2 text-sm text-accent-pink dark:text-accent-pink">
           Failed to load drivers: {driversError}
         </p>
       </div>
@@ -68,21 +68,21 @@ export default function Drivers() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Drivers</h1>
+      <h1 className="font-heading text-2xl font-bold text-white">Drivers</h1>
 
       {driverList.length === 0 ? (
-        <p className="mt-2 text-gray-600 dark:text-gray-300">No drivers recorded yet.</p>
+        <p className="mt-2 text-white/70">No drivers recorded yet.</p>
       ) : (
-        <div className="mt-4 overflow-hidden rounded-lg bg-white dark:bg-gray-800 shadow">
-          <ul className="divide-y divide-gray-200 dark:divide-gray-700">
+        <div className="mt-4 overflow-hidden rounded-lg bg-surface-card dark:bg-brand-darker-blue shadow-card">
+          <ul className="divide-y divide-line dark:divide-white/10">
             {driverList.map((driver) => (
               <li key={driver.driver_id}>
                 <Link
                   to={`/drivers/${driver.driver_id}`}
-                  className="block w-full px-4 py-3 text-left text-sm text-gray-900 hover:bg-gray-50 dark:text-white dark:hover:bg-gray-700"
+                  className="block w-full px-4 py-3 text-left text-sm text-brand-dark hover:bg-surface-page dark:text-white dark:hover:bg-white/10"
                 >
                   {driver.full_name}
-                  <span className="block text-xs text-gray-500 dark:text-gray-400">
+                  <span className="block text-xs text-muted dark:text-white/60">
                     {driver.license_number}
                   </span>
                 </Link>

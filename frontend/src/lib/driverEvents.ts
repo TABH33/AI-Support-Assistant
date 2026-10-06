@@ -22,23 +22,27 @@ export const EVENT_TYPE_ORDER: DrivingEventType[] = [
   'route_deviation',
 ]
 
-/** Label + color-coded badge classes per driving-event type (ASS3 §2.2). */
+/** Label + color-coded badge classes per driving-event type (ASS3 §2.2).
+ * Ctrack-Design-Kit colours: danger (speeding), accent-orange ("alert
+ * accents" per the kit's own usage note -- harsh braking), warning-yellow
+ * (idling), brand-purple (route deviation, kept distinct from the other
+ * three as its own data category). */
 export const EVENT_TYPE_CONFIG: Record<DrivingEventType, { label: string; badgeClass: string }> = {
   speeding: {
     label: 'Speeding',
-    badgeClass: 'bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300',
+    badgeClass: 'bg-status-danger-surface text-status-danger-text dark:bg-status-danger-text/30 dark:text-status-danger-surface',
   },
   harsh_braking: {
     label: 'Harsh braking',
-    badgeClass: 'bg-orange-100 text-orange-800 dark:bg-orange-900/50 dark:text-orange-300',
+    badgeClass: 'bg-accent-orange/15 text-accent-orange dark:bg-accent-orange/25 dark:text-accent-orange',
   },
   idling: {
     label: 'Idling',
-    badgeClass: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900/50 dark:text-yellow-300',
+    badgeClass: 'bg-status-warning-surface text-status-warning-text dark:bg-status-warning-text/30 dark:text-status-warning-surface',
   },
   route_deviation: {
     label: 'Route deviation',
-    badgeClass: 'bg-purple-100 text-purple-800 dark:bg-purple-900/50 dark:text-purple-300',
+    badgeClass: 'bg-brand-purple/15 text-brand-purple dark:bg-brand-purple/25 dark:text-brand-purple',
   },
 }
 

@@ -56,7 +56,7 @@ export function CesSurvey({ sessionId, onSubmit, onSkip }: CesSurveyProps) {
       className="flex flex-1 flex-col justify-between p-4"
     >
       <div>
-        <p className="mb-3 text-sm font-medium text-gray-900 dark:text-white">
+        <p className="mb-3 text-sm font-medium text-brand-dark dark:text-white">
           How much effort did it take to resolve your issue today?
         </p>
         <div role="group" aria-label="Effort score, 1 to 7" className="flex justify-between gap-1">
@@ -70,22 +70,22 @@ export function CesSurvey({ sessionId, onSubmit, onSkip }: CesSurveyProps) {
               disabled={isSubmitting}
               className={`h-8 w-8 rounded border text-xs font-medium transition-colors disabled:opacity-50 ${
                 score === value
-                  ? 'border-indigo-600 bg-indigo-600 text-white'
-                  : 'border-gray-300 text-gray-700 hover:bg-gray-100 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700'
+                  ? 'border-brand-teal bg-brand-teal text-white'
+                  : 'border-line text-muted hover:bg-surface-page dark:border-white/20 dark:text-white/80 dark:hover:bg-white/10'
               }`}
             >
               {value}
             </button>
           ))}
         </div>
-        <div className="mt-1 flex justify-between text-[10px] text-gray-500 dark:text-gray-400">
+        <div className="mt-1 flex justify-between text-[10px] text-muted dark:text-white/60">
           <span>Very easy</span>
           <span>Very difficult</span>
         </div>
       </div>
 
       {error && (
-        <p role="alert" className="mt-3 text-xs text-red-600 dark:text-red-400">
+        <p role="alert" className="mt-3 text-xs text-status-danger-text dark:text-status-danger-text">
           {error}
         </p>
       )}
@@ -95,7 +95,7 @@ export function CesSurvey({ sessionId, onSubmit, onSkip }: CesSurveyProps) {
           type="button"
           onClick={onSkip}
           disabled={isSubmitting}
-          className="rounded px-3 py-1.5 text-xs text-gray-500 hover:text-gray-700 disabled:opacity-50 dark:text-gray-400 dark:hover:text-gray-200"
+          className="rounded px-3 py-1.5 text-xs text-muted hover:text-brand-dark disabled:opacity-50 dark:text-white/60 dark:hover:text-white"
         >
           Skip
         </button>
@@ -103,7 +103,7 @@ export function CesSurvey({ sessionId, onSubmit, onSkip }: CesSurveyProps) {
           type="button"
           onClick={() => void handleSubmit()}
           disabled={score === null || isSubmitting}
-          className="rounded bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+          className="rounded bg-brand-teal px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-darker-teal disabled:opacity-50"
         >
           Submit
         </button>

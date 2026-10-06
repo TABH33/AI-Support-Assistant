@@ -435,13 +435,13 @@ export function ChatWidget() {
         <div
           role="dialog"
           aria-label="AI chat assistant"
-          className={`mb-3 flex h-[32rem] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-xl dark:border-gray-700 dark:bg-gray-800 ${
+          className={`mb-3 flex h-[32rem] overflow-hidden rounded-lg border border-line bg-surface-card shadow-card dark:border-white/10 dark:bg-brand-darker-blue ${
             activeRoutePlan ? 'w-[44rem]' : 'w-80'
           }`}
         >
           <div className="flex h-full w-80 flex-shrink-0 flex-col">
-          <div className="flex items-center justify-between bg-indigo-600 px-4 py-3 text-white">
-            <span className="font-semibold">AI Assistant</span>
+          <div className="flex items-center justify-between bg-brand-dark px-4 py-3 text-white">
+            <span className="font-heading font-semibold">AI Assistant</span>
             <button
               type="button"
               aria-label="Minimize chat"
@@ -460,7 +460,7 @@ export function ChatWidget() {
                 <div
                   role="status"
                   data-testid="chat-disclosure-banner"
-                  className="border-b border-blue-200 bg-blue-50 px-4 py-2 text-xs text-blue-900 dark:border-blue-800 dark:bg-blue-900/40 dark:text-blue-200"
+                  className="border-b border-brand-teal/30 bg-brand-teal/10 px-4 py-2 text-xs text-brand-dark dark:border-brand-teal/20 dark:bg-brand-teal/10 dark:text-white"
                 >
                   You are talking to an AI assistant.
                 </div>
@@ -471,7 +471,7 @@ export function ChatWidget() {
                   <div className="max-w-[85%]">
                     <div
                       data-testid="chat-greeting"
-                      className="rounded-lg bg-gray-100 px-3 py-2 text-sm text-gray-900 dark:bg-gray-700 dark:text-white"
+                      className="rounded-lg bg-surface-page px-3 py-2 text-sm text-brand-dark dark:bg-white/10 dark:text-white"
                     >
                       <p>Hi, I'm your AI Assistant — how can I help you today?</p>
                     </div>
@@ -483,16 +483,16 @@ export function ChatWidget() {
                       data-testid={`chat-message-${message.role}`}
                       className={`rounded-lg px-3 py-2 text-sm ${
                         message.role === 'user'
-                          ? 'ml-auto bg-indigo-600 text-white'
+                          ? 'ml-auto bg-brand-teal text-white'
                           : message.escalated
-                            ? 'border border-amber-400 bg-amber-50 text-amber-900 dark:border-amber-600 dark:bg-amber-900/30 dark:text-amber-200'
-                            : 'bg-gray-100 text-gray-900 dark:bg-gray-700 dark:text-white'
+                            ? 'border border-status-warning-text/30 bg-status-warning-surface text-status-warning-text dark:border-status-warning-text/40 dark:bg-status-warning-surface/20 dark:text-status-warning-surface'
+                            : 'bg-surface-page text-brand-dark dark:bg-white/10 dark:text-white'
                       }`}
                     >
                       {message.role === 'assistant' && message.escalated && (
                         <p
                           data-testid="chat-escalation-label"
-                          className="mb-1 flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-300"
+                          className="mb-1 flex items-center gap-1 text-xs font-semibold uppercase tracking-wide text-status-warning-text dark:text-status-warning-surface"
                         >
                           ⚠ Escalated to human support
                         </p>
@@ -504,7 +504,7 @@ export function ChatWidget() {
                       (message.escalationStatus === 'offered' || message.escalationStatus === 'sending') && (
                         <div
                           data-testid="chat-escalation-offer"
-                          className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300"
+                          className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted dark:text-white/70"
                         >
                           <span>Would you like to escalate this to a human?</span>
                           <button
@@ -513,7 +513,7 @@ export function ChatWidget() {
                             onClick={() =>
                               void handleEscalationChoice(message.id, message.chatMessageId as number, true)
                             }
-                            className="rounded bg-indigo-600 px-2 py-0.5 font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                            className="rounded bg-brand-teal px-2 py-0.5 font-medium text-white hover:bg-brand-darker-teal disabled:opacity-50"
                           >
                             Yes
                           </button>
@@ -523,7 +523,7 @@ export function ChatWidget() {
                             onClick={() =>
                               void handleEscalationChoice(message.id, message.chatMessageId as number, false)
                             }
-                            className="rounded border border-gray-300 px-2 py-0.5 font-medium text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-600 dark:text-gray-200 dark:hover:bg-gray-700"
+                            className="rounded border border-line px-2 py-0.5 font-medium text-muted hover:bg-surface-page disabled:opacity-50 dark:border-white/20 dark:text-white/80 dark:hover:bg-white/10"
                           >
                             No
                           </button>
@@ -532,7 +532,7 @@ export function ChatWidget() {
                     {message.role === 'assistant' && message.escalationStatus === 'confirmed' && (
                       <p
                         data-testid="chat-escalation-confirmation"
-                        className="mt-1 text-xs text-gray-600 dark:text-gray-300"
+                        className="mt-1 text-xs text-muted dark:text-white/70"
                       >
                         A support agent has been notified (ref #{message.escalationTicketId})
                         {message.escalationEmailSent ? '' : ' (email notification could not be sent)'}
@@ -541,15 +541,15 @@ export function ChatWidget() {
                     {message.role === 'assistant' && message.chatMessageId !== undefined && (
                       <div
                         data-testid="chat-feedback-controls"
-                        className="mt-1 flex items-center gap-1.5 text-gray-400 dark:text-gray-500"
+                        className="mt-1 flex items-center gap-1.5 text-muted/70 dark:text-white/40"
                       >
                         <button
                           type="button"
                           aria-label="Thumbs up"
                           aria-pressed={message.feedback === true}
                           onClick={() => void handleFeedback(message.id, message.chatMessageId as number, true)}
-                          className={`rounded px-1 text-sm hover:text-green-600 dark:hover:text-green-400 ${
-                            message.feedback === true ? 'text-green-600 dark:text-green-400' : ''
+                          className={`rounded px-1 text-sm hover:text-status-success-text dark:hover:text-status-success-text ${
+                            message.feedback === true ? 'text-status-success-text dark:text-status-success-text' : ''
                           }`}
                         >
                           👍
@@ -559,8 +559,8 @@ export function ChatWidget() {
                           aria-label="Thumbs down"
                           aria-pressed={message.feedback === false}
                           onClick={() => void handleFeedback(message.id, message.chatMessageId as number, false)}
-                          className={`rounded px-1 text-sm hover:text-red-600 dark:hover:text-red-400 ${
-                            message.feedback === false ? 'text-red-600 dark:text-red-400' : ''
+                          className={`rounded px-1 text-sm hover:text-status-danger-text dark:hover:text-status-danger-text ${
+                            message.feedback === false ? 'text-status-danger-text dark:text-status-danger-text' : ''
                           }`}
                         >
                           👎
@@ -573,7 +573,7 @@ export function ChatWidget() {
               </div>
 
               {error && (
-                <p role="alert" className="px-3 pb-1 text-xs text-red-600 dark:text-red-400">
+                <p role="alert" className="px-3 pb-1 text-xs text-status-danger-text dark:text-status-danger-text">
                   {error}
                 </p>
               )}
@@ -582,14 +582,14 @@ export function ChatWidget() {
                 <div
                   role="status"
                   data-testid="chat-needs-selection"
-                  className="border-t border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-200"
+                  className="border-t border-status-warning-text/30 bg-status-warning-surface px-4 py-3 text-xs text-status-warning-text dark:border-status-warning-text/40 dark:bg-status-warning-surface/20 dark:text-status-warning-surface"
                 >
                   Select a driver or vehicle from Overview or Drivers first, so the assistant knows which
                   customer this chat is about.
                 </div>
               ) : (
                 <form
-                  className="flex items-center gap-2 border-t border-gray-200 p-3 dark:border-gray-700"
+                  className="flex items-center gap-2 border-t border-line p-3 dark:border-white/10"
                   onSubmit={(event) => {
                     event.preventDefault()
                     void handleSend()
@@ -602,12 +602,12 @@ export function ChatWidget() {
                     placeholder="Type a message…"
                     aria-label="Chat message"
                     disabled={isSending}
-                    className="flex-1 rounded border border-gray-300 px-2 py-1.5 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none dark:border-gray-600 dark:bg-gray-900 dark:text-white"
+                    className="flex-1 rounded border border-line bg-white px-2 py-1.5 text-sm text-brand-dark focus:border-brand-teal focus:outline-none dark:border-white/20 dark:bg-white/5 dark:text-white"
                   />
                   <button
                     type="submit"
                     disabled={isSending || inputValue.trim() === ''}
-                    className="rounded bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+                    className="rounded bg-brand-teal px-3 py-1.5 text-sm font-medium text-white hover:bg-brand-darker-teal disabled:opacity-50"
                   >
                     Send
                   </button>
@@ -620,7 +620,7 @@ export function ChatWidget() {
           {activeRoutePlan && (
             <div
               data-testid="chat-route-map-panel"
-              className="flex-1 border-l border-gray-200 p-2 dark:border-gray-700"
+              className="flex-1 border-l border-line p-2 dark:border-white/10"
             >
               <RouteMap routePlan={activeRoutePlan} />
             </div>
@@ -632,7 +632,7 @@ export function ChatWidget() {
         type="button"
         onClick={handleToggle}
         aria-label={isOpen ? 'Close chat' : 'Open chat'}
-        className="flex h-14 w-14 items-center justify-center rounded-full bg-indigo-600 text-2xl text-white shadow-lg hover:bg-indigo-700"
+        className="flex h-14 w-14 items-center justify-center rounded-full bg-brand-teal text-2xl text-white shadow-lg hover:bg-brand-darker-teal"
       >
         {isOpen ? '✕' : '💬'}
       </button>

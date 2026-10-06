@@ -153,7 +153,7 @@ describe('DriverDetail', () => {
     const speedingBadge = screen.getByTestId('event-badge-speeding')
     expect(speedingBadge).toHaveTextContent('Speeding')
     expect(speedingBadge).toHaveTextContent('4')
-    expect(speedingBadge.className).toContain('bg-red-100')
+    expect(speedingBadge.className).toContain('bg-status-danger-surface')
 
     const harshBrakingBadge = screen.getByTestId('event-badge-harsh_braking')
     expect(harshBrakingBadge).toHaveTextContent('1')

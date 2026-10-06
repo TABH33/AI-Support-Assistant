@@ -101,34 +101,34 @@ export default function DriverDetail() {
 
   return (
     <div>
-      <Link to="/drivers" className="text-sm text-blue-600 hover:underline dark:text-blue-400">
+      <Link to="/drivers" className="text-sm text-brand-teal hover:underline">
         ← Back to drivers
       </Link>
 
       {isLoadingDriver ? (
-        <p className="mt-4 text-gray-600 dark:text-gray-300">Loading driver…</p>
+        <p className="mt-4 text-white/70">Loading driver…</p>
       ) : driverError ? (
-        <p role="alert" className="mt-4 text-sm text-red-600 dark:text-red-400">
+        <p role="alert" className="mt-4 text-sm text-accent-pink dark:text-accent-pink">
           Failed to load driver: {driverError}
         </p>
       ) : (
         driver && (
-          <div className="mt-4 rounded-lg bg-white dark:bg-gray-800 shadow p-4">
-            <h1 className="text-2xl font-bold text-gray-900 dark:text-white">{driver.full_name}</h1>
-            <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+          <div className="mt-4 rounded-lg bg-surface-card dark:bg-brand-darker-blue shadow-card p-4">
+            <h1 className="font-heading text-2xl font-bold text-white">{driver.full_name}</h1>
+            <p className="mt-1 text-sm text-muted dark:text-white/60">
               License {driver.license_number}
             </p>
 
             {isLoadingDetail ? (
-              <p className="mt-4 text-gray-600 dark:text-gray-300">Loading driving events…</p>
+              <p className="mt-4 text-white/70">Loading driving events…</p>
             ) : detailError ? (
-              <p role="alert" className="mt-4 text-sm text-red-600 dark:text-red-400">
+              <p role="alert" className="mt-4 text-sm text-accent-pink dark:text-accent-pink">
                 Failed to load driving events: {detailError}
               </p>
             ) : (
               eventCounts && (
                 <>
-                  <p className="mt-4 text-sm text-gray-500 dark:text-gray-400">
+                  <p className="mt-4 text-sm text-muted dark:text-white/60">
                     Based on {tripCount} trip{tripCount === 1 ? '' : 's'}
                   </p>
                   <dl className="mt-2 flex flex-wrap gap-2">

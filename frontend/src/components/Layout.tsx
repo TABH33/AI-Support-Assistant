@@ -1,10 +1,26 @@
+import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import { useAuth } from '../context/AuthProvider'
 import { ChatWidget } from './ChatWidget'
+import ctrackLogo from '../assets/ctrack-logo.png'
 
-const NAV_LINKS = [
-  { to: '/overview', label: 'Overview' },
+/** Fleet-management tools (fleet-wide summary, driver roster) that stay
+ * support_agent-only -- a customer's nav/routing is scoped to their own
+ * route-planning and alerts workflow. See RequireRole for the matching
+ * route guard in App.tsx. */
+const CUSTOMER_NAV_LINKS = [
   { to: '/routes', label: 'Routes' },
+  { to: '/tracking', label: 'Live Tracking' },
+  { to: '/alerts', label: 'Alerts' },
+]
+
+/** Routes (plan-a-route + today's list) is customer-only: a support_agent's
+ * view of active routes and their drivers is already covered by Live
+ * Tracking, so the redundant list -- and the plan-on-a-customer's-behalf
+ * form that came with it -- are deliberately not offered here. See
+ * RequireRole for the matching route guard in App.tsx. */
+const SUPPORT_AGENT_NAV_LINKS = [
+  { to: '/overview', label: 'Overview' },
   { to: '/tracking', label: 'Live Tracking' },
   { to: '/drivers', label: 'Drivers' },
   { to: '/alerts', label: 'Alerts' },
@@ -13,24 +29,81 @@ const NAV_LINKS = [
 /** Top-level app shell: nav bar + routed page content via <Outlet />. */
 export function Layout() {
   const { user, logout } = useAuth()
+  const navLinks = user?.role === 'support_agent' ? SUPPORT_AGENT_NAV_LINKS : CUSTOMER_NAV_LINKS
+  const [isMenuOpen, setIsMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  // The role/log-out menu closes on an outside click or Escape -- it does
+  // not live inside a <details>/<dialog>, so this listener is how it
+  // behaves like a native dropdown.
+  useEffect(() => {
+    if (!isMenuOpen) return
+
+    function handlePointerDown(event: MouseEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setIsMenuOpen(false)
+      }
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        setIsMenuOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [isMenuOpen])
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
-      <nav className="flex items-center justify-between px-6 py-4 bg-white dark:bg-gray-800 shadow">
+    <div className="min-h-screen bg-brand-dark dark:bg-brand-darker-blue">
+      <nav className="flex items-center justify-between px-6 py-4 bg-brand-dark dark:bg-brand-darker-blue shadow-card">
         <div className="flex items-center gap-6">
-          <span className="font-bold text-lg text-gray-900 dark:text-white">
-            Telematics AI Assistant
-          </span>
+          <div className="relative" ref={menuRef}>
+            <button
+              type="button"
+              onClick={() => setIsMenuOpen((open) => !open)}
+              aria-haspopup="menu"
+              aria-expanded={isMenuOpen}
+              className="flex items-center rounded focus:outline-none focus:ring-2 focus:ring-brand-teal"
+            >
+              <img src={ctrackLogo} alt="Ctrack" className="h-8 w-auto" />
+            </button>
+            {isMenuOpen && user && (
+              <div
+                role="menu"
+                className="absolute left-0 top-full mt-2 w-48 rounded-lg bg-brand-darker-blue shadow-card py-2 z-10"
+              >
+                <p className="px-4 py-1.5 text-xs font-medium text-white/50 capitalize">
+                  {user.role.replace('_', ' ')}
+                </p>
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setIsMenuOpen(false)
+                    logout()
+                  }}
+                  className="w-full text-left px-4 py-1.5 text-sm font-medium text-white/80 hover:text-accent-orange"
+                >
+                  Log out
+                </button>
+              </div>
+            )}
+          </div>
           <div className="flex items-center gap-4">
-            {NAV_LINKS.map((link) => (
+            {navLinks.map((link) => (
               <NavLink
                 key={link.to}
                 to={link.to}
                 className={({ isActive }) =>
                   `text-sm font-medium ${
                     isActive
-                      ? 'text-indigo-600 dark:text-indigo-400'
-                      : 'text-gray-600 dark:text-gray-300 hover:text-indigo-600 dark:hover:text-indigo-400'
+                      ? 'text-brand-teal'
+                      : 'text-white/80 hover:text-brand-teal'
                   }`
                 }
               >
@@ -39,20 +112,8 @@ export function Layout() {
             ))}
           </div>
         </div>
-        <div className="flex items-center gap-4">
-          {user && (
-            <span className="text-sm text-gray-500 dark:text-gray-400">{user.role}</span>
-          )}
-          <button
-            type="button"
-            onClick={logout}
-            className="text-sm font-medium text-gray-600 dark:text-gray-300 hover:text-red-600 dark:hover:text-red-400"
-          >
-            Log out
-          </button>
-        </div>
       </nav>
-      <main className="p-6">
+      <main className="p-6 font-body">
         <Outlet />
       </main>
       <ChatWidget />

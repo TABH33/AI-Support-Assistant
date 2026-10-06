@@ -1,7 +1,8 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
-import { AuthProvider } from './context/AuthProvider'
+import { AuthProvider, useAuth } from './context/AuthProvider'
 import { SelectionProvider } from './context/SelectionContext'
 import { ProtectedRoute } from './components/ProtectedRoute'
+import { RequireRole } from './components/RequireRole'
 import { Layout } from './components/Layout'
 import Login from './pages/Login'
 import Overview from './pages/Overview'
@@ -10,6 +11,14 @@ import LiveTracking from './pages/LiveTracking'
 import Drivers from './pages/Drivers'
 import DriverDetail from './pages/DriverDetail'
 import Alerts from './pages/Alerts'
+
+/** A customer's fleet-management-free default landing page is `/routes`;
+ * a support_agent's is `/overview`, unchanged from before this page was
+ * scoped to support_agent only. */
+function DefaultRoute() {
+  const { user } = useAuth()
+  return <Navigate to={user?.role === 'support_agent' ? '/overview' : '/routes'} replace />
+}
 
 function App() {
   return (
@@ -26,14 +35,42 @@ function App() {
                 </ProtectedRoute>
               }
             >
-              <Route index element={<Navigate to="/overview" replace />} />
-              <Route path="/overview" element={<Overview />} />
-              <Route path="/routes" element={<RoutesPage />} />
+              <Route index element={<DefaultRoute />} />
+              <Route
+                path="/overview"
+                element={
+                  <RequireRole role="support_agent" redirectTo="/routes">
+                    <Overview />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="/routes"
+                element={
+                  <RequireRole role="customer" redirectTo="/overview">
+                    <RoutesPage />
+                  </RequireRole>
+                }
+              />
               <Route path="/tracking" element={<LiveTracking />} />
-              <Route path="/drivers" element={<Drivers />} />
-              <Route path="/drivers/:driverId" element={<DriverDetail />} />
+              <Route
+                path="/drivers"
+                element={
+                  <RequireRole role="support_agent" redirectTo="/routes">
+                    <Drivers />
+                  </RequireRole>
+                }
+              />
+              <Route
+                path="/drivers/:driverId"
+                element={
+                  <RequireRole role="support_agent" redirectTo="/routes">
+                    <DriverDetail />
+                  </RequireRole>
+                }
+              />
               <Route path="/alerts" element={<Alerts />} />
-              <Route path="*" element={<Navigate to="/overview" replace />} />
+              <Route path="*" element={<DefaultRoute />} />
             </Route>
           </Routes>
         </BrowserRouter>

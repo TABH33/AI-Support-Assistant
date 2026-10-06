@@ -24,8 +24,10 @@ interface LiveTrackingMapProps {
 
 /** One color per tracked route, cycled by index, so two routes sharing a
  * stretch of road stay tellable apart. Deliberately not keyed off severity
- * or status -- every route drawn here is active and available. */
-const ROUTE_COLORS = ['#4f46e5', '#0891b2', '#c2410c', '#15803d', '#a21caf']
+ * or status -- every route drawn here is active and available. Drawn from
+ * Ctrack-Design-Kit's dataSources/extended palette (its documented use is
+ * exactly this: chart/source differentiation, never long-form text). */
+const ROUTE_COLORS = ['#002B49', '#40C1AC', '#882784', '#EE7759', '#CF3175']
 
 function routeColor(index: number): string {
   return ROUTE_COLORS[index % ROUTE_COLORS.length]
@@ -45,9 +47,9 @@ export function LiveTrackingMap({ routes }: LiveTrackingMapProps) {
     return (
       <div
         data-testid="live-tracking-map-empty"
-        className="flex h-96 w-full items-center justify-center rounded-lg border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800"
+        className="flex h-96 w-full items-center justify-center rounded-lg border border-line bg-surface-card dark:border-white/10 dark:bg-brand-darker-blue"
       >
-        <p className="text-sm text-gray-600 dark:text-gray-300">
+        <p className="text-sm text-muted dark:text-white/70">
           No routes are being tracked right now.
         </p>
       </div>
@@ -59,7 +61,7 @@ export function LiveTrackingMap({ routes }: LiveTrackingMapProps) {
   return (
     <div
       data-testid="live-tracking-map"
-      className="h-96 w-full overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700"
+      className="h-96 w-full overflow-hidden rounded-lg border border-line dark:border-white/10"
     >
       <MapContainer center={center} zoom={11} style={{ height: '100%', width: '100%' }} scrollWheelZoom={false}>
         <TileLayer
