@@ -13,6 +13,8 @@ rather than creating duplicates.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from app.auth.security import hash_password
 from app.database import SessionLocal
 from app.models.telematics import Driver, Vehicle
@@ -24,10 +26,20 @@ class DemoDriverLoginError(RuntimeError):
     """The database isn't in a state this script can seed into."""
 
 
-def run() -> list[tuple[Driver, str]]:
-    """Set credentials on the first `_NUM_DRIVER_LOGINS` drivers. Returns
-    each updated `Driver` paired with its plaintext password, for
-    `_print_summary` -- the only place the plaintext is ever printed."""
+@dataclass(frozen=True)
+class UpdatedDriverLogin:
+    """Plain data, not the ORM `Driver` itself -- `run()` closes its session
+    before returning, so holding onto the mapped object would make
+    `_print_summary` touch a detached instance and raise."""
+
+    driver_id: int
+    email: str
+    password: str
+    assigned_vehicle_id: int | None
+
+
+def run() -> list[UpdatedDriverLogin]:
+    """Set credentials on the first `_NUM_DRIVER_LOGINS` drivers."""
     session = SessionLocal()
     try:
         drivers = (
@@ -39,7 +51,7 @@ def run() -> list[tuple[Driver, str]]:
                 "run `python -m app.seed.seed` first."
             )
 
-        updated: list[tuple[Driver, str]] = []
+        updated: list[UpdatedDriverLogin] = []
         for index, driver in enumerate(drivers, start=1):
             # "driver-login-" (not generator.py's plain "driver-NN@..."):
             # the live DB's driver rows don't actually line up with their
@@ -61,7 +73,14 @@ def run() -> list[tuple[Driver, str]]:
                 )
                 if vehicle is not None:
                     driver.assigned_vehicle_id = vehicle.vehicle_id
-            updated.append((driver, password))
+            updated.append(
+                UpdatedDriverLogin(
+                    driver_id=driver.driver_id,
+                    email=email,
+                    password=password,
+                    assigned_vehicle_id=driver.assigned_vehicle_id,
+                )
+            )
 
         session.commit()
         return updated
@@ -72,15 +91,15 @@ def run() -> list[tuple[Driver, str]]:
         session.close()
 
 
-def _print_summary(updated: list[tuple[Driver, str]]) -> None:
+def _print_summary(updated: list[UpdatedDriverLogin]) -> None:
     print("Driver login credentials (SYNTHETIC demo data):")
-    for driver, password in updated:
+    for login in updated:
         vehicle_note = (
-            f"vehicle_id={driver.assigned_vehicle_id}"
-            if driver.assigned_vehicle_id is not None
+            f"vehicle_id={login.assigned_vehicle_id}"
+            if login.assigned_vehicle_id is not None
             else "no vehicle in their fleet to assign"
         )
-        print(f"  {driver.email} / {password}  (driver_id={driver.driver_id}, {vehicle_note})")
+        print(f"  {login.email} / {login.password}  (driver_id={login.driver_id}, {vehicle_note})")
 
 
 def main(argv: list[str] | None = None) -> None:
